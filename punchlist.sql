@@ -705,13 +705,13 @@ CREATE TABLE `notification_type_prefs` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Table structure for table `notification_preferences`
+-- Table structure for table `notification_global_preferences`
 --
 
-DROP TABLE IF EXISTS `notification_preferences`;
+DROP TABLE IF EXISTS `notification_global_preferences`;
 /*!40101 SET @saved_cs_client     = @@character_set_client */;
 /*!50503 SET character_set_client = utf8mb4 */;
-CREATE TABLE `notification_preferences` (
+CREATE TABLE `notification_global_preferences` (
   `user_id` int NOT NULL,
   `allow_in_app` tinyint(1) NOT NULL DEFAULT '1',
   `allow_email` tinyint(1) NOT NULL DEFAULT '0',
@@ -726,7 +726,7 @@ CREATE TABLE `notification_preferences` (
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`user_id`),
-  CONSTRAINT `fk_np_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+  CONSTRAINT `fk_ngp_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 

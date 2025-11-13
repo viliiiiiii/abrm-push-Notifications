@@ -11,6 +11,231 @@ function notif_pdo(): PDO {
 $GLOBALS['notif_type_pref_cache'] = $GLOBALS['notif_type_pref_cache'] ?? [];
 $GLOBALS['notif_global_pref_cache'] = $GLOBALS['notif_global_pref_cache'] ?? [];
 
+function notif_table_exists(PDO $pdo, string $table): bool {
+    if (!preg_match('/^[A-Za-z0-9_]+$/', $table)) {
+        throw new InvalidArgumentException('Invalid table name supplied.');
+    }
+    try {
+        $pdo->query('SELECT 1 FROM `' . $table . '` LIMIT 0');
+        return true;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+function notif_table_columns(PDO $pdo, string $table): array {
+    if (!preg_match('/^[A-Za-z0-9_]+$/', $table)) {
+        throw new InvalidArgumentException('Invalid table name supplied.');
+    }
+    try {
+        $stmt = $pdo->query('SHOW COLUMNS FROM `' . $table . '`');
+        if (!$stmt) {
+            return [];
+        }
+        $out = [];
+        foreach ($stmt as $row) {
+            if (isset($row['Field'])) {
+                $out[] = (string)$row['Field'];
+            }
+        }
+        return $out;
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+function notif_global_preferences_table(): string {
+    static $table = null;
+    if ($table !== null) {
+        return $table;
+    }
+
+    $pdo = notif_pdo();
+    $newTable = 'notification_global_preferences';
+    $legacyTable = 'notification_preferences';
+    $createSql = "CREATE TABLE IF NOT EXISTS `{$newTable}` (
+        `user_id` int NOT NULL,
+        `allow_in_app` tinyint(1) NOT NULL DEFAULT '1',
+        `allow_email` tinyint(1) NOT NULL DEFAULT '0',
+        `allow_push` tinyint(1) NOT NULL DEFAULT '0',
+        `type_task` tinyint(1) NOT NULL DEFAULT '1',
+        `type_note` tinyint(1) NOT NULL DEFAULT '1',
+        `type_system` tinyint(1) NOT NULL DEFAULT '1',
+        `type_password_reset` tinyint(1) NOT NULL DEFAULT '1',
+        `type_security` tinyint(1) NOT NULL DEFAULT '1',
+        `type_digest` tinyint(1) NOT NULL DEFAULT '1',
+        `type_marketing` tinyint(1) NOT NULL DEFAULT '0',
+        `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (`user_id`),
+        CONSTRAINT `fk_ngp_user` FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+
+    $hasNew = false;
+    $hasLegacy = false;
+
+    try { $hasNew = notif_table_exists($pdo, $newTable); } catch (Throwable $e) { $hasNew = false; }
+    try { $hasLegacy = notif_table_exists($pdo, $legacyTable); } catch (Throwable $e) { $hasLegacy = false; }
+
+    if (!$hasNew) {
+        try {
+            $pdo->exec($createSql);
+            $hasNew = notif_table_exists($pdo, $newTable);
+        } catch (Throwable $e) {
+            $hasNew = false;
+        }
+
+        if ($hasNew && $hasLegacy) {
+            try {
+                $pdo->exec("INSERT IGNORE INTO `{$newTable}`
+                    (user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing, created_at, updated_at)
+                    SELECT user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing, created_at, updated_at
+                    FROM `{$legacyTable}`");
+            } catch (Throwable $e) {
+            }
+        }
+    } elseif ($hasLegacy) {
+        try {
+            $pdo->exec("INSERT IGNORE INTO `{$newTable}`
+                (user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing, created_at, updated_at)
+                SELECT user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing, created_at, updated_at
+                FROM `{$legacyTable}`");
+        } catch (Throwable $e) {
+        }
+    }
+
+    if ($hasNew) {
+        $table = $newTable;
+        return $table;
+    }
+
+    if ($hasLegacy) {
+        $table = $legacyTable;
+        return $table;
+    }
+
+    try {
+        $pdo->exec($createSql);
+    } catch (Throwable $e) {
+    }
+
+    $table = $newTable;
+    return $table;
+}
+
+function notif_ensure_device_schema(): void {
+    static $ensured = false;
+    if ($ensured) {
+        return;
+    }
+    $ensured = true;
+
+    try {
+        $pdo = notif_pdo();
+    } catch (Throwable $e) {
+        return;
+    }
+
+    $table = 'notification_devices';
+    if (!notif_table_exists($pdo, $table)) {
+        $sql = "CREATE TABLE IF NOT EXISTS `{$table}` (
+            `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+            `user_id` int NOT NULL,
+            `kind` enum('webpush','fcm','apns') NOT NULL DEFAULT 'webpush',
+            `endpoint` varchar(500) NOT NULL,
+            `p256dh` varchar(255) DEFAULT NULL,
+            `auth` varchar(255) DEFAULT NULL,
+            `user_agent` varchar(255) NOT NULL DEFAULT '',
+            `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            `last_used_at` datetime DEFAULT NULL,
+            PRIMARY KEY (`id`),
+            UNIQUE KEY `uniq_kind_endpoint` (`kind`,`endpoint`),
+            KEY `idx_user_kind` (`user_id`,`kind`),
+            CONSTRAINT `fk_dev_user` FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+        try { $pdo->exec($sql); } catch (Throwable $e) { return; }
+    }
+
+    $columns = notif_table_columns($pdo, $table);
+    $alters = [];
+    if (!in_array('p256dh', $columns, true)) {
+        $alters[] = "ADD COLUMN `p256dh` varchar(255) DEFAULT NULL AFTER `endpoint`";
+    }
+    if (!in_array('auth', $columns, true)) {
+        $alters[] = "ADD COLUMN `auth` varchar(255) DEFAULT NULL AFTER `p256dh`";
+    }
+    if (!in_array('user_agent', $columns, true)) {
+        $alters[] = "ADD COLUMN `user_agent` varchar(255) NOT NULL DEFAULT '' AFTER `auth`";
+    }
+    if (!in_array('last_used_at', $columns, true)) {
+        $alters[] = "ADD COLUMN `last_used_at` datetime DEFAULT NULL AFTER `created_at`";
+    }
+    if ($alters) {
+        try {
+            $pdo->exec('ALTER TABLE `' . $table . '` ' . implode(', ', $alters));
+        } catch (Throwable $e) {
+        }
+    }
+}
+
+function notif_ensure_queue_schema(): void {
+    static $ensured = false;
+    if ($ensured) {
+        return;
+    }
+    $ensured = true;
+
+    try {
+        $pdo = notif_pdo();
+    } catch (Throwable $e) {
+        return;
+    }
+
+    $table = 'notification_channels_queue';
+    if (!notif_table_exists($pdo, $table)) {
+        $sql = "CREATE TABLE IF NOT EXISTS `{$table}` (
+            `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+            `notification_id` bigint unsigned NOT NULL,
+            `channel` enum('email','push') NOT NULL,
+            `attempt_count` int unsigned NOT NULL DEFAULT '0',
+            `status` enum('pending','sending','sent','failed','skipped') NOT NULL DEFAULT 'pending',
+            `last_error` varchar(255) DEFAULT NULL,
+            `scheduled_at` datetime DEFAULT NULL,
+            `sent_at` datetime DEFAULT NULL,
+            `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (`id`),
+            KEY `idx_status_sched` (`status`,`scheduled_at`),
+            KEY `idx_notif` (`notification_id`),
+            CONSTRAINT `fk_q_notif` FOREIGN KEY (`notification_id`) REFERENCES `notifications`(`id`) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+        try { $pdo->exec($sql); } catch (Throwable $e) { return; }
+    }
+
+    $columns = notif_table_columns($pdo, $table);
+    $alters = [];
+    if (!in_array('attempt_count', $columns, true)) {
+        $alters[] = "ADD COLUMN `attempt_count` int unsigned NOT NULL DEFAULT '0' AFTER `channel`";
+    }
+    if (!in_array('last_error', $columns, true)) {
+        $alters[] = "ADD COLUMN `last_error` varchar(255) DEFAULT NULL AFTER `status`";
+    }
+    if (!in_array('scheduled_at', $columns, true)) {
+        $alters[] = "ADD COLUMN `scheduled_at` datetime DEFAULT NULL AFTER `last_error`";
+    }
+    if (!in_array('sent_at', $columns, true)) {
+        $alters[] = "ADD COLUMN `sent_at` datetime DEFAULT NULL AFTER `scheduled_at`";
+    }
+    if (!in_array('created_at', $columns, true)) {
+        $alters[] = "ADD COLUMN `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP AFTER `sent_at`";
+    }
+    if ($alters) {
+        try {
+            $pdo->exec('ALTER TABLE `' . $table . '` ' . implode(', ', $alters));
+        } catch (Throwable $e) {
+        }
+    }
+}
+
 /**
  * Return a map of logical notification column names to the physical column
  * names present in the database. This keeps the runtime compatible with
@@ -246,7 +471,8 @@ function notif_get_global_preferences(int $userId): array {
 
     try {
         $pdo = notif_pdo();
-        $stmt = $pdo->prepare('SELECT * FROM notification_preferences WHERE user_id = :u LIMIT 1');
+        $table = notif_global_preferences_table();
+        $stmt = $pdo->prepare('SELECT * FROM `' . $table . '` WHERE user_id = :u LIMIT 1');
         $stmt->execute([':u' => $userId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($row) {
@@ -307,7 +533,8 @@ function notif_set_global_preferences(int $userId, array $prefs): void {
 
     try {
         $pdo = notif_pdo();
-        $sql = 'INSERT INTO notification_preferences
+        $table = notif_global_preferences_table();
+        $sql = 'INSERT INTO `' . $table . '`
                 (user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing)
                 VALUES (:u, :in_app, :email, :push, :task, :note, :system, :pwd, :security, :digest, :marketing)
                 ON DUPLICATE KEY UPDATE
@@ -545,6 +772,7 @@ function notif_unsubscribe_user(int $userId, ?string $entityType, ?int $entityId
 function notif_emit(array $args): ?int {
     // $args: user_id, type, entity_type?, entity_id?, title?, body?, url?, data?, actor_user_id?
     $pdo = notif_pdo();
+    notif_ensure_queue_schema();
 
     $userId = (int)$args['user_id'];
     $type   = (string)$args['type'];
@@ -816,6 +1044,7 @@ function notif_mark_all_read(int $userId): void {
     $pdo->prepare($sql)->execute([':u' => $userId]);
 }
 function notif_touch_web_device(int $userId, string $userAgent): void {
+    notif_ensure_device_schema();
     $pdo = notif_pdo();
     $ua   = substr($userAgent, 0, 255);
 
@@ -852,6 +1081,8 @@ function notif_fetch_devices(int $userId, ?string $kind = null): array {
     if ($userId <= 0) {
         return [];
     }
+
+    notif_ensure_device_schema();
 
     try {
         $pdo = notif_pdo();
@@ -1044,6 +1275,8 @@ function notif_process_push_queue(int $limit = 25): array {
         'errors'  => [],
     ];
 
+    notif_ensure_queue_schema();
+
     if (!notif_vapid_ready()) {
         $summary['errors'][] = 'VAPID keys are not configured.';
         return $summary;
@@ -1059,7 +1292,7 @@ function notif_process_push_queue(int $limit = 25): array {
         $pdo->beginTransaction();
         $stmt = $pdo->prepare('SELECT id, notification_id
                                 FROM notification_channels_queue
-                                WHERE channel = \"push\" AND status = \"pending\"
+                                WHERE channel = \'push\' AND status = \'pending\'
                                 ORDER BY id ASC
                                 LIMIT :lim FOR UPDATE SKIP LOCKED');
         $stmt->bindValue(':lim', max(1, (int)$limit), PDO::PARAM_INT);

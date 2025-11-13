@@ -40,6 +40,8 @@ if (!$localUserId) {
     $respond(['ok' => false, 'error' => 'profile_unavailable'], 409);
 }
 
+notif_ensure_device_schema();
+
 $raw = file_get_contents('php://input');
 $data = [];
 if ($raw !== '' && stripos((string)($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json') !== false) {
@@ -107,7 +109,7 @@ try {
     $pdo = notif_pdo();
     $stmt = $pdo->prepare("INSERT INTO notification_devices (user_id, kind, endpoint, p256dh, auth, user_agent, created_at, last_used_at)
                             VALUES (:uid, 'webpush', :endpoint, :p256dh, :auth, :ua, NOW(), NOW())
-                            ON DUPLICATE KEY UPDATE p256dh = VALUES(p256dh), auth = VALUES(auth), user_agent = VALUES(user_agent), last_used_at = NOW()");
+                            ON DUPLICATE KEY UPDATE endpoint = VALUES(endpoint), p256dh = VALUES(p256dh), auth = VALUES(auth), user_agent = VALUES(user_agent), last_used_at = NOW()");
     $stmt->execute([
         ':uid'      => $localUserId,
         ':endpoint' => $endpoint,
