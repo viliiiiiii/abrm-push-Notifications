@@ -101,7 +101,12 @@ $breadcrumbs = build_breadcrumbs($path);
   <title><?php echo bc_s($title); ?> - <?php echo bc_s(APP_TITLE); ?></title>
   <link rel="stylesheet" href="/assets/css/app.css?v=pro-1.1">
   <link rel="icon" href="/assets/favicon.ico">
+  <link rel="manifest" href="/manifest.webmanifest">
   <meta name="theme-color" content="#f6f9ff">
+  <meta name="csrf-token" content="<?php echo bc_s(csrf_token()); ?>">
+  <?php if (defined('WEB_PUSH_VAPID_PUBLIC_KEY') && WEB_PUSH_VAPID_PUBLIC_KEY): ?>
+    <meta name="vapid-public-key" content="<?php echo bc_s(WEB_PUSH_VAPID_PUBLIC_KEY); ?>">
+  <?php endif; ?>
   <script type="module" src="/assets/js/app.js?v=pro-1.1" defer></script>
   <style>
     /* Lightweight breadcrumb styling (move to app.css later if you want) */
@@ -124,7 +129,12 @@ $breadcrumbs = build_breadcrumbs($path);
 </head>
 <body
   data-notif-stream="/notifications/stream.php"
-  data-notif-poll="/notifications/api.php?action=unread_count">
+  data-notif-poll="/notifications/api.php?action=unread_count"
+  data-auth="<?php echo $me ? '1' : '0'; ?>"
+  data-service-worker="/sw.js"
+  data-push-subscribe="/notifications/push_subscribe.php"
+  data-push-public-key="<?php echo bc_s(defined('WEB_PUSH_VAPID_PUBLIC_KEY') ? (WEB_PUSH_VAPID_PUBLIC_KEY ?? '') : ''); ?>"
+  data-csrf-name="<?php echo bc_s(CSRF_TOKEN_NAME); ?>">
 <header class="navbar">
   <div class="navbar__inner container">
     <a href="/index.php" class="brand" aria-label="<?php echo bc_s(APP_TITLE); ?>">
@@ -219,6 +229,7 @@ $breadcrumbs = build_breadcrumbs($path);
             </div>
             <div class="nav__bell-popover__footer">
               <a href="/notifications/index.php">View all</a>
+              <a class="nav__bell-settings" href="/notifications/settings.php" title="Notification settings"><span aria-hidden="true">⚙️</span><span class="sr-only">Notification settings</span></a>
             </div>
           </div>
         </div>

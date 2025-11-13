@@ -9,6 +9,27 @@ const onReady = (fn) => {
 const roomsCache = new Map();
 const toastIds = new Set();
 
+function getCsrfToken() {
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  return meta ? meta.getAttribute('content') || '' : '';
+}
+
+function getCsrfName() {
+  const body = document.body;
+  return body ? body.dataset.csrfName || 'csrf_token' : 'csrf_token';
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i += 1) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
 function sanitizeText(text) {
   return (text ?? '')
     .toString()
@@ -347,6 +368,8 @@ function initNotifications() {
 
   const streamUrl = body.dataset.notifStream;
   const pollUrl = body.dataset.notifPoll;
+  const csrfName = getCsrfName();
+  const csrfToken = getCsrfToken();
   const bellWrapper = document.querySelector('[data-notif-bell]');
   const popover = bellWrapper ? bellWrapper.querySelector('[data-notif-popover]') : null;
   const popoverList = popover ? popover.querySelector('[data-notif-popover-list]') : null;
@@ -356,6 +379,21 @@ function initNotifications() {
   const defaultEmptyText = popoverEmpty ? popoverEmpty.textContent : "You're all caught up.";
   let hidePopoverTimer = null;
   let lastPeekAt = 0;
+
+  const markRead = (notificationId) => {
+    if (!notificationId) return;
+    const formData = new FormData();
+    formData.append('action', 'mark_read');
+    formData.append('id', String(notificationId));
+    formData.append(csrfName, csrfToken);
+    fetch('/notifications/api.php?action=mark_read', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      body: formData,
+      keepalive: true,
+    }).catch(() => {});
+  };
 
   const renderCount = (count) => {
     const num = Number(count) || 0;
@@ -387,6 +425,7 @@ function initNotifications() {
     items.forEach((item) => {
       const li = document.createElement('li');
       li.className = 'nav__bell-item';
+       li.dataset.notificationId = String(item.id || '');
       if (!item.is_read) {
         li.classList.add('is-unread');
       }
@@ -445,6 +484,19 @@ function initNotifications() {
     popoverEmpty.textContent = defaultEmptyText;
     popoverEmpty.hidden = true;
   };
+
+  if (popoverList) {
+    popoverList.addEventListener('click', (event) => {
+      const link = event.target.closest('a.nav__bell-item-link');
+      if (!link) return;
+      const itemEl = event.target.closest('li.nav__bell-item');
+      if (!itemEl) return;
+      const notifId = itemEl.dataset.notificationId;
+      if (notifId) {
+        markRead(notifId);
+      }
+    });
+  }
 
   const fetchPeek = async (force = false) => {
     if (!popover || !popoverList) return;
@@ -596,6 +648,193 @@ function initNotifications() {
       }
     };
     poll();
+  }
+}
+
+function initPush() {
+  const body = document.body;
+  if (!body) return;
+
+  const swPath = body.dataset.serviceWorker || '';
+  if ('serviceWorker' in navigator && swPath) {
+    navigator.serviceWorker.register(swPath).catch((err) => {
+      console.warn('Service worker registration failed', err);
+    });
+  }
+
+  if (body.dataset.auth !== '1') {
+    document.dispatchEvent(new CustomEvent('push:ready', { detail: { supported: false } }));
+    return;
+  }
+
+  const subscribeEndpoint = body.dataset.pushSubscribe || '';
+  const vapidKey = body.dataset.pushPublicKey || '';
+  if (!('Notification' in window) || !('PushManager' in window) || subscribeEndpoint === '' || vapidKey === '') {
+    document.dispatchEvent(new CustomEvent('push:ready', { detail: { supported: false } }));
+    return;
+  }
+
+  const csrfName = getCsrfName();
+  const csrfToken = getCsrfToken();
+
+  const fetchStatus = async () => {
+    const resp = await fetch(subscribeEndpoint, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    if (!resp.ok) throw new Error('status_failed');
+    return resp.json();
+  };
+
+  const sendIntent = async (intent, payload = {}) => {
+    const bodyPayload = { intent, [csrfName]: csrfToken, ...payload };
+    const resp = await fetch(subscribeEndpoint, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body: JSON.stringify(bodyPayload),
+    });
+    if (!resp.ok) throw new Error('request_failed');
+    return resp.json();
+  };
+
+  const ensureSubscription = async ({ force = false } = {}) => {
+    if (Notification.permission === 'denied') {
+      throw new Error('permission_denied');
+    }
+    if (Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        throw new Error('permission_denied');
+      }
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (subscription && !force) {
+      return { ok: true, subscription };
+    }
+    if (subscription) {
+      try { await subscription.unsubscribe(); } catch (err) { /* ignore */ }
+    }
+
+    const convertedKey = urlBase64ToUint8Array(vapidKey);
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: convertedKey,
+    });
+
+    const payload = subscription && typeof subscription.toJSON === 'function'
+      ? subscription.toJSON()
+      : JSON.parse(JSON.stringify(subscription));
+    await sendIntent('subscribe', { subscription: payload });
+    return { ok: true, subscription };
+  };
+
+  const unsubscribe = async () => {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      const endpoint = subscription.endpoint;
+      await subscription.unsubscribe();
+      await sendIntent('unsubscribe', { endpoint });
+    }
+    return fetchStatus();
+  };
+
+  document.dispatchEvent(new CustomEvent('push:ready', {
+    detail: {
+      supported: true,
+      ensureSubscription,
+      unsubscribe,
+      fetchStatus,
+      permission: () => Notification.permission,
+    },
+  }));
+}
+
+function initPushControls() {
+  const statusEl = document.querySelector('[data-push-status]');
+  const statusText = document.querySelector('[data-push-status-text]');
+  const buttons = document.querySelectorAll('[data-push-action]');
+  if (!statusEl && !buttons.length) {
+    return;
+  }
+
+  const updateStatus = (text) => {
+    if (statusText) {
+      statusText.textContent = text;
+    }
+  };
+
+  let controller = { supported: false };
+
+  document.addEventListener('push:ready', async (event) => {
+    controller = event.detail || { supported: false };
+    if (!controller.supported) {
+      updateStatus('Push not supported');
+      buttons.forEach((btn) => { btn.disabled = true; });
+      return;
+    }
+    if (controller.permission && controller.permission() === 'denied') {
+      updateStatus('Permission denied');
+      buttons.forEach((btn) => { btn.disabled = true; });
+      return;
+    }
+    try {
+      const result = await controller.fetchStatus();
+      const devices = Array.isArray(result.devices) ? result.devices : [];
+      updateStatus(devices.length ? 'Enabled' : 'Ready');
+    } catch (err) {
+      updateStatus('Unable to load status');
+    }
+  }, { once: true });
+
+  buttons.forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!controller || !controller.supported) {
+        return;
+      }
+      const action = button.dataset.pushAction;
+      button.disabled = true;
+      try {
+        if (action === 'enable') {
+          await controller.ensureSubscription({ force: true });
+        } else if (action === 'disable') {
+          await controller.unsubscribe();
+        }
+        const result = await controller.fetchStatus();
+        const devices = Array.isArray(result.devices) ? result.devices : [];
+        updateStatus(devices.length ? 'Enabled' : 'Disabled');
+      } catch (err) {
+        updateStatus('Push failed');
+        console.warn('Push control failed', err);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', async (event) => {
+      if (!controller || !controller.supported) {
+        return;
+      }
+      if (event.data && event.data.type === 'pushsubscriptionchange') {
+        try {
+          const result = await controller.fetchStatus();
+          const devices = Array.isArray(result.devices) ? result.devices : [];
+          updateStatus(devices.length ? 'Enabled' : 'Ready');
+        } catch (err) {
+          updateStatus('Unable to refresh status');
+        }
+      }
+    });
   }
 }
 
@@ -824,6 +1063,8 @@ function initCommandPalette() {
 onReady(() => {
   initNav();
   initNotifications();
+  initPush();
+  initPushControls();
   initRooms();
   initCommandPalette();
 });

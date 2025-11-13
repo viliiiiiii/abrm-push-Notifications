@@ -1315,6 +1315,23 @@ function log_event(string $action, ?string $type = null, ?int $id = null, array 
     } catch (Throwable $e) {
         // swallow logging errors
     }
+
+    try {
+        if (!function_exists('notif_handle_log_event')) {
+            require_once __DIR__ . '/includes/notifications.php';
+        }
+        if (function_exists('notif_handle_log_event')) {
+            $ipText = null;
+            if (!empty($ipCandidate) && is_string($ipCandidate)) {
+                $ipText = $ipCandidate;
+            } elseif (!empty($remoteAddr) && is_string($remoteAddr)) {
+                $ipText = $remoteAddr;
+            }
+            notif_handle_log_event($action, $type, $id, $meta, $user, $ipText);
+        }
+    } catch (Throwable $e) {
+        try { error_log('notif_handle_log_event failed: ' . $e->getMessage()); } catch (Throwable $_) {}
+    }
 }
 
 /**

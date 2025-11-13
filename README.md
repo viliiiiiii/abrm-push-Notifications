@@ -4,7 +4,7 @@ A lightweight PHP 8.2+ punch list manager designed for LAMP stacks with S3-compa
 
 ## Setup
 
-1. Run `composer install` to download dependencies (AWS SDK for PHP + Dompdf).
+1. Run `composer install` to download dependencies (AWS SDK for PHP, Dompdf, PhpSpreadsheet, Minishlink Web Push).
 2. Create a MySQL database and run the schema in `schema.sql` (or from README instructions).
 3. Copy `config.php.example` to `config.php` and fill in database and S3-compatible storage credentials.
 4. Run `php seed.php` once to seed the admin user (`admin@example.com` / `admin123`) and sample data.
@@ -84,3 +84,10 @@ For alternative storage backends (Ceph, OpenIO, etc.), adjust the endpoint and p
 - CSRF tokens protect all forms and upload/delete actions.
 - File uploads go directly to the configured S3-compatible endpoint.
 - Exports make use of Dompdf and standard CSV output.
+
+## Web push & notification settings
+
+- Generate VAPID keys with `php scripts/generate_vapid.php` and copy the values into `config.php` (`WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY`, `WEB_PUSH_VAPID_SUBJECT`).
+- The notification worker (`php scripts/notifications_worker.php [batchSize]`) processes queued push jobs; run it via cron or a supervisor alongside any email worker you maintain.
+- Users can manage per-channel and per-type preferences from `/notifications/settings.php`. The navigation bell dropdown includes a shortcut.
+- Browsers register a push subscription via the service worker (`/sw.js`); the manifest (`/manifest.webmanifest`) enables installable PWA behaviour.
