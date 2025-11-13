@@ -41,6 +41,14 @@ define('CORE_DB_USER', 'core_user');
 define('CORE_DB_PASS', 'core123');
 
 // Web Push / VAPID configuration
-define('WEB_PUSH_VAPID_PUBLIC_KEY', getenv('WEB_PUSH_VAPID_PUBLIC_KEY') ?: '');
-define('WEB_PUSH_VAPID_PRIVATE_KEY', getenv('WEB_PUSH_VAPID_PRIVATE_KEY') ?: '');
-define('WEB_PUSH_VAPID_SUBJECT', getenv('WEB_PUSH_VAPID_SUBJECT') ?: 'mailto:admin@example.com');
+define('WEB_PUSH_VAPID_PUBLIC_KEY',
+    getenv('WEB_PUSH_VAPID_PUBLIC_KEY') ?: 'BFVtM-ytGJ4vahPj7suGZLSrPcmvke6XKfLNdgJa56dYJzGMIEMhF3Qklm9C8pE8CWascoY5tbxFPAMvkXwy5ds'
+);
+
+define('WEB_PUSH_VAPID_PRIVATE_KEY',
+    getenv('WEB_PUSH_VAPID_PRIVATE_KEY') ?: 'yKS9mCDDnnAjnyFv02dbDioGn2-TadEgslt79G9kkZg'
+);
+
+define('WEB_PUSH_VAPID_SUBJECT',
+    getenv('WEB_PUSH_VAPID_SUBJECT') ?: 'mailto:elvirisljamovic@gmail.com'
+);

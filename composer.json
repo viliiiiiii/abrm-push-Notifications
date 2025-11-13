@@ -7,7 +7,7 @@
         "aws/aws-sdk-php": "^3.298",
         "dompdf/dompdf": "^2.0",
         "phpoffice/phpspreadsheet": "^5.1",
-        "minishlink/web-push": "^9.1"
+        "minishlink/web-push": "9.0.2"
     },
     "autoload": {
         "files": [

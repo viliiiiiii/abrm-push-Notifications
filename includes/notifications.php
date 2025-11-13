@@ -857,11 +857,14 @@ function notif_process_push_queue(int $limit = 25): array {
     try {
         $pdo = notif_pdo();
         $pdo->beginTransaction();
-        $stmt = $pdo->prepare('SELECT id, notification_id
-                                FROM notification_channels_queue
-                                WHERE channel = \"push\" AND status = \"pending\"
-                                ORDER BY id ASC
-                                LIMIT :lim FOR UPDATE SKIP LOCKED');
+        $stmt = $pdo->prepare(
+    'SELECT id, notification_id
+     FROM notification_channels_queue
+     WHERE channel = \'push\' AND status = \'pending\'
+     ORDER BY id ASC
+     LIMIT :lim FOR UPDATE SKIP LOCKED'
+);
+
         $stmt->bindValue(':lim', max(1, (int)$limit), PDO::PARAM_INT);
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
