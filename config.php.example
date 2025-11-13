@@ -30,3 +30,8 @@ define('CSRF_TOKEN_NAME', 'csrf_token');
 define('APP_TIMEZONE', 'UTC');
 
 define('APP_TITLE', 'Punch List Manager');
+
+// Web Push / VAPID configuration (fill after generating keys via scripts/generate_vapid.php)
+define('WEB_PUSH_VAPID_PUBLIC_KEY', getenv('WEB_PUSH_VAPID_PUBLIC_KEY') ?: '');
+define('WEB_PUSH_VAPID_PRIVATE_KEY', getenv('WEB_PUSH_VAPID_PRIVATE_KEY') ?: '');
+define('WEB_PUSH_VAPID_SUBJECT', getenv('WEB_PUSH_VAPID_SUBJECT') ?: 'mailto:admin@example.com');

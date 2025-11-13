@@ -11,12 +11,25 @@ function attempt_login(string $email, string $password): bool {
     $email = trim($email);
     if ($email === '' || $password === '') return false;
 
+    $resolveClientIp = static function (): ?string {
+        $xff = (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');
+        $chain = array_values(array_filter(array_map('trim', explode(',', $xff)), fn($v) => $v !== ''));
+        $ip = $chain[0] ?? ($_SERVER['REMOTE_ADDR'] ?? null);
+        return $ip ? trim((string)$ip) : null;
+    };
+
     // --- 1) CORE auth
     $user = core_find_user_by_email($email);
     if ($user && !empty($user['pass_hash']) && password_verify($password, (string)$user['pass_hash'])) {
         auth_login((int)$user['id']);
         enforce_not_suspended();
         log_event('login', 'user', (int)$user['id']);
+        try {
+            require_once __DIR__ . '/includes/notifications.php';
+            if (function_exists('notif_track_login')) {
+                notif_track_login((int)$user['id'], $resolveClientIp(), $_SERVER['HTTP_USER_AGENT'] ?? '');
+            }
+        } catch (Throwable $e) {}
         return true;
     }
 
@@ -47,6 +60,12 @@ function attempt_login(string $email, string $password): bool {
             if ($user) {
                 auth_login((int)$user['id']);
                 log_event('login', 'user', (int)$user['id'], ['source' => 'legacy_seed']);
+                try {
+                    require_once __DIR__ . '/includes/notifications.php';
+                    if (function_exists('notif_track_login')) {
+                        notif_track_login((int)$user['id'], $resolveClientIp(), $_SERVER['HTTP_USER_AGENT'] ?? '');
+                    }
+                } catch (Throwable $e) {}
                 return true;
             }
         } catch (Throwable $e) {

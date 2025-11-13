@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/helpers.php';
+require_once __DIR__ . '/includes/notifications.php';
 require_login(); // must be signed in to change your password
 
 $errors = [];
@@ -43,6 +44,18 @@ if (is_post()) {
         $stmt->execute([':h' => $hash, ':id' => (int)$user['id']]);
 
         log_event('password_change', 'user', (int)$user['id']);
+        try {
+            $xff = (string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');
+            $chain = array_values(array_filter(array_map('trim', explode(',', $xff)), fn($v) => $v !== ''));
+            $ip = $chain[0] ?? ($_SERVER['REMOTE_ADDR'] ?? null);
+            $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+            notify_users([(int)$user['id']], 'security.password_change', 'Password updated', 'Your account password was updated successfully.', '/reset_password.php', [
+                'ip' => $ip ? trim((string)$ip) : null,
+                'user_agent' => $ua,
+            ]);
+        } catch (Throwable $notifyErr) {
+            try { error_log('password change notification failed: ' . $notifyErr->getMessage()); } catch (Throwable $_) {}
+        }
         $ok = 'Password updated successfully.';
     }
 }

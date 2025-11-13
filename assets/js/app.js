@@ -9,6 +9,27 @@ const onReady = (fn) => {
 const roomsCache = new Map();
 const toastIds = new Set();
 
+function getCsrfToken() {
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  return meta ? meta.getAttribute('content') || '' : '';
+}
+
+function getCsrfName() {
+  const body = document.body;
+  return body ? body.dataset.csrfName || 'csrf_token' : 'csrf_token';
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i += 1) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+
 function sanitizeText(text) {
   return (text ?? '')
     .toString()
@@ -347,6 +368,8 @@ function initNotifications() {
 
   const streamUrl = body.dataset.notifStream;
   const pollUrl = body.dataset.notifPoll;
+  const csrfName = getCsrfName();
+  const csrfToken = getCsrfToken();
   const bellWrapper = document.querySelector('[data-notif-bell]');
   const popover = bellWrapper ? bellWrapper.querySelector('[data-notif-popover]') : null;
   const popoverList = popover ? popover.querySelector('[data-notif-popover-list]') : null;
@@ -356,6 +379,21 @@ function initNotifications() {
   const defaultEmptyText = popoverEmpty ? popoverEmpty.textContent : "You're all caught up.";
   let hidePopoverTimer = null;
   let lastPeekAt = 0;
+
+  const markRead = (notificationId) => {
+    if (!notificationId) return;
+    const formData = new FormData();
+    formData.append('action', 'mark_read');
+    formData.append('id', String(notificationId));
+    formData.append(csrfName, csrfToken);
+    fetch('/notifications/api.php?action=mark_read', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      body: formData,
+      keepalive: true,
+    }).catch(() => {});
+  };
 
   const renderCount = (count) => {
     const num = Number(count) || 0;
@@ -387,6 +425,7 @@ function initNotifications() {
     items.forEach((item) => {
       const li = document.createElement('li');
       li.className = 'nav__bell-item';
+       li.dataset.notificationId = String(item.id || '');
       if (!item.is_read) {
         li.classList.add('is-unread');
       }
@@ -445,6 +484,19 @@ function initNotifications() {
     popoverEmpty.textContent = defaultEmptyText;
     popoverEmpty.hidden = true;
   };
+
+  if (popoverList) {
+    popoverList.addEventListener('click', (event) => {
+      const link = event.target.closest('a.nav__bell-item-link');
+      if (!link) return;
+      const itemEl = event.target.closest('li.nav__bell-item');
+      if (!itemEl) return;
+      const notifId = itemEl.dataset.notificationId;
+      if (notifId) {
+        markRead(notifId);
+      }
+    });
+  }
 
   const fetchPeek = async (force = false) => {
     if (!popover || !popoverList) return;
@@ -596,6 +648,327 @@ function initNotifications() {
       }
     };
     poll();
+  }
+}
+
+function initPush() {
+  const body = document.body;
+  if (!body) return;
+
+  const swPath = body.dataset.serviceWorker || '';
+  if ('serviceWorker' in navigator && swPath) {
+    navigator.serviceWorker.register(swPath).catch((err) => {
+      console.warn('Service worker registration failed', err);
+    });
+  }
+
+  const announce = (detail) => {
+    window.__pushController = detail;
+    setTimeout(() => {
+      document.dispatchEvent(new CustomEvent('push:ready', { detail }));
+    }, 0);
+  };
+
+  if (body.dataset.auth !== '1') {
+    announce({ supported: false, reason: 'unauthenticated' });
+    return;
+  }
+
+  const subscribeEndpoint = body.dataset.pushSubscribe || '';
+  let vapidKey = body.dataset.pushPublicKey || '';
+  if (!vapidKey) {
+    const vapidMeta = document.querySelector('meta[name="vapid-public-key"]');
+    if (vapidMeta) {
+      vapidKey = vapidMeta.getAttribute('content') || '';
+    }
+  }
+
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    announce({ supported: false, reason: 'unsupported' });
+    return;
+  }
+
+  if (subscribeEndpoint === '') {
+    announce({ supported: false, reason: 'missing-endpoint' });
+    return;
+  }
+
+  if (vapidKey === '') {
+    announce({ supported: false, reason: 'missing-key' });
+    return;
+  }
+
+  const csrfName = getCsrfName();
+  const csrfToken = getCsrfToken();
+
+  const fetchStatus = async () => {
+    const resp = await fetch(subscribeEndpoint, {
+      method: 'GET',
+      credentials: 'same-origin',
+      headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+    });
+    if (!resp.ok) throw new Error('status_failed');
+    return resp.json();
+  };
+
+  const sendIntent = async (intent, payload = {}) => {
+    const bodyPayload = { intent, [csrfName]: csrfToken, ...payload };
+    const resp = await fetch(subscribeEndpoint, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body: JSON.stringify(bodyPayload),
+    });
+    if (!resp.ok) throw new Error('request_failed');
+    return resp.json();
+  };
+
+  const ensureSubscription = async ({ force = false } = {}) => {
+    if (Notification.permission === 'denied') {
+      throw new Error('permission_denied');
+    }
+    if (Notification.permission === 'default') {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        throw new Error('permission_denied');
+      }
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    let subscription = await registration.pushManager.getSubscription();
+    if (subscription && !force) {
+      const payload = subscription && typeof subscription.toJSON === 'function'
+        ? subscription.toJSON()
+        : JSON.parse(JSON.stringify(subscription));
+      await sendIntent('subscribe', { subscription: payload });
+      return { ok: true, subscription };
+    }
+    if (subscription) {
+      try { await subscription.unsubscribe(); } catch (err) { /* ignore */ }
+    }
+
+    const convertedKey = urlBase64ToUint8Array(vapidKey);
+    subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: convertedKey,
+    });
+
+    const payload = subscription && typeof subscription.toJSON === 'function'
+      ? subscription.toJSON()
+      : JSON.parse(JSON.stringify(subscription));
+    await sendIntent('subscribe', { subscription: payload });
+    return { ok: true, subscription };
+  };
+
+  const unsubscribe = async ({ disableAll = false } = {}) => {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    let endpoint = '';
+    if (subscription) {
+      endpoint = subscription.endpoint || '';
+      try { await subscription.unsubscribe(); } catch (err) { /* ignore */ }
+    }
+    const intent = disableAll ? 'disable' : 'unsubscribe';
+    const payload = endpoint ? { endpoint } : {};
+    const response = await sendIntent(intent, payload);
+    return response;
+  };
+
+  announce({
+    supported: true,
+    ensureSubscription,
+    unsubscribe,
+    fetchStatus,
+    permission: () => Notification.permission,
+  });
+}
+
+function initPushControls() {
+  const statusEl = document.querySelector('[data-push-status]');
+  const statusText = document.querySelector('[data-push-status-text]');
+  const buttons = document.querySelectorAll('[data-push-action]');
+  const devicesRegion = document.querySelector('[data-push-devices-region]');
+  const devicesList = devicesRegion ? devicesRegion.querySelector('[data-push-device-list]') : null;
+  const emptyState = devicesRegion ? devicesRegion.querySelector('[data-push-empty]') : null;
+  if (!statusEl && !buttons.length) {
+    return;
+  }
+
+  const updateStatus = (text) => {
+    if (statusText) {
+      statusText.textContent = text;
+    }
+  };
+
+  const disableButtons = () => {
+    buttons.forEach((btn) => { btn.disabled = true; });
+  };
+
+  const enableButtons = () => {
+    buttons.forEach((btn) => { btn.disabled = false; });
+  };
+
+  const renderDevices = (devices) => {
+    if (!devicesList || !emptyState) {
+      return;
+    }
+    const entries = Array.isArray(devices) ? devices : [];
+    if (!entries.length) {
+      devicesList.innerHTML = '';
+      devicesList.hidden = true;
+      emptyState.hidden = false;
+      return;
+    }
+
+    const csrfName = sanitizeText(getCsrfName());
+    const csrfToken = sanitizeText(getCsrfToken());
+
+    const items = entries.map((device) => {
+      const id = Number(device.id) || 0;
+      const kindRaw = (device.kind || '').toString();
+      const kindLabel = kindRaw === 'webpush' ? 'Browser push' : kindRaw || 'Device';
+      const agent = device.user_agent ? sanitizeText(device.user_agent) : '';
+      const lastSeenRaw = device.last_used_at || device.created_at || '';
+      let lastSeenText = '';
+      if (lastSeenRaw) {
+        const relative = formatRelativeTime(lastSeenRaw.replace(' ', 'T'));
+        lastSeenText = `Last used ${lastSeenRaw}`;
+        if (relative) {
+          lastSeenText += ` (${relative})`;
+        }
+        lastSeenText = sanitizeText(lastSeenText);
+      }
+      const metaParts = [];
+      if (agent) metaParts.push(`<span>${agent}</span>`);
+      if (lastSeenText) metaParts.push(`<span>${lastSeenText}</span>`);
+      const metaHtml = metaParts.join('');
+
+      return `
+        <li data-device-id="${id}">
+          <div class="device-meta">
+            <strong>${sanitizeText(kindLabel)}</strong>
+            ${metaHtml}
+          </div>
+          <form method="post" class="inline-form" onsubmit="return confirm('Remove this device?');">
+            <input type="hidden" name="intent" value="device-delete">
+            <input type="hidden" name="device_id" value="${id}">
+            <input type="hidden" name="${csrfName}" value="${csrfToken}">
+            <button type="submit" class="btn link">Remove</button>
+          </form>
+        </li>
+      `;
+    }).join('');
+
+    devicesList.innerHTML = items;
+    devicesList.hidden = false;
+    emptyState.hidden = true;
+  };
+
+  let controller = { supported: false };
+
+  const applyStatus = (result) => {
+    if (!result || result.ok === false) {
+      updateStatus('Unable to load status');
+      renderDevices([]);
+      return;
+    }
+    const devices = Array.isArray(result.devices) ? result.devices : [];
+    renderDevices(devices);
+    if (result.vapid_ready === false) {
+      updateStatus('Push not configured');
+      return;
+    }
+    if (result.allow_push) {
+      updateStatus(devices.length ? 'Enabled' : 'Ready');
+    } else {
+      updateStatus('Disabled');
+    }
+  };
+
+  const handleReady = async (event) => {
+    controller = event.detail || { supported: false };
+    if (!controller.supported) {
+      const reason = controller.reason || '';
+      if (reason === 'missing-key') {
+        updateStatus('Push not configured');
+      } else if (reason === 'unauthenticated') {
+        updateStatus('Sign in to enable push');
+      } else if (reason === 'missing-endpoint') {
+        updateStatus('Push endpoint unavailable');
+      } else {
+        updateStatus('Push not supported');
+      }
+      disableButtons();
+      renderDevices([]);
+      return;
+    }
+
+    if (controller.permission && controller.permission() === 'denied') {
+      updateStatus('Permission denied');
+      disableButtons();
+      renderDevices([]);
+      return;
+    }
+
+    enableButtons();
+    try {
+      const result = await controller.fetchStatus();
+      applyStatus(result);
+    } catch (err) {
+      console.warn('Push status fetch failed', err);
+      updateStatus('Unable to load status');
+      renderDevices([]);
+    }
+  };
+
+  document.addEventListener('push:ready', handleReady);
+  if (window.__pushController) {
+    handleReady({ detail: window.__pushController });
+  }
+
+  buttons.forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!controller || !controller.supported) {
+        return;
+      }
+      const action = button.dataset.pushAction;
+      button.disabled = true;
+      try {
+        if (action === 'enable') {
+          await controller.ensureSubscription({ force: true });
+          const result = await controller.fetchStatus();
+          applyStatus(result);
+        } else if (action === 'disable') {
+          const result = await controller.unsubscribe({ disableAll: true });
+          applyStatus(result);
+        }
+      } catch (err) {
+        updateStatus('Push failed');
+        console.warn('Push control failed', err);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', async (event) => {
+      if (!controller || !controller.supported) {
+        return;
+      }
+      if (event.data && event.data.type === 'pushsubscriptionchange') {
+        try {
+          const result = await controller.fetchStatus();
+          applyStatus(result);
+        } catch (err) {
+          updateStatus('Unable to refresh status');
+        }
+      }
+    });
   }
 }
 
@@ -824,6 +1197,8 @@ function initCommandPalette() {
 onReady(() => {
   initNav();
   initNotifications();
+  initPush();
+  initPushControls();
   initRooms();
   initCommandPalette();
 });
