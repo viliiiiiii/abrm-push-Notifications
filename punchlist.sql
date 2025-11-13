@@ -663,14 +663,26 @@ CREATE TABLE `notification_subscriptions` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Dumping data for table `notification_subscriptions`
+-- Table structure for table `user_login_fingerprints`
 --
 
-LOCK TABLES `notification_subscriptions` WRITE;
-/*!40000 ALTER TABLE `notification_subscriptions` DISABLE KEYS */;
-INSERT INTO `notification_subscriptions` VALUES (1,1,'task',3536,'task.updated','web',1,'2025-11-02 21:58:37'),(2,2,'task',4136,'task.updated','web',1,'2025-11-04 13:19:55'),(3,2,'task',4122,'task.updated','web',1,'2025-11-06 11:12:23'),(4,2,'task',4100,'task.updated','web',1,'2025-11-06 11:12:37'),(5,2,'task',4089,'task.updated','web',1,'2025-11-06 11:13:44'),(6,2,'task',1901,'task.updated','web',1,'2025-11-11 21:19:19'),(7,2,'task',1902,'task.updated','web',1,'2025-11-11 21:20:29'),(8,2,'task',5988,'task.updated','web',1,'2025-11-11 21:26:01'),(9,2,'task',5989,'task.updated','web',1,'2025-11-11 21:26:02'),(10,2,'task',2030,'task.updated','web',1,'2025-11-11 21:30:10'),(11,2,'task',2031,'task.updated','web',1,'2025-11-11 21:31:08'),(12,2,'task',5990,'task.updated','web',1,'2025-11-11 21:34:21'),(13,2,'task',2047,'task.updated','web',1,'2025-11-11 21:36:23'),(14,2,'task',2054,'task.updated','web',1,'2025-11-11 21:38:32'),(15,2,'task',1959,'task.updated','web',1,'2025-11-11 21:39:07'),(16,2,'task',1957,'task.updated','web',1,'2025-11-11 21:40:34'),(17,2,'task',2060,'task.updated','web',1,'2025-11-11 21:41:15'),(18,2,'task',2061,'task.updated','web',1,'2025-11-11 21:42:02'),(19,2,'task',2062,'task.updated','web',1,'2025-11-11 21:42:40'),(20,2,'task',2068,'task.updated','web',1,'2025-11-11 21:43:41'),(21,2,'task',2073,'task.updated','web',1,'2025-11-11 21:45:50'),(22,2,'task',1988,'task.updated','web',1,'2025-11-11 21:49:27'),(23,1,'task',5991,'task.updated','web',1,'2025-11-11 21:50:15'),(24,2,'task',5992,'task.updated','web',1,'2025-11-11 21:51:01'),(25,2,'task',5993,'task.updated','web',1,'2025-11-11 21:51:58'),(26,2,'task',2088,'task.updated','web',1,'2025-11-11 21:53:11'),(27,2,'task',2089,'task.updated','web',1,'2025-11-11 21:53:37'),(28,2,'task',1995,'task.updated','web',1,'2025-11-11 21:53:46'),(29,2,'task',2000,'task.updated','web',1,'2025-11-11 21:55:00'),(30,2,'task',5994,'task.updated','web',1,'2025-11-11 21:59:16');
-/*!40000 ALTER TABLE `notification_subscriptions` ENABLE KEYS */;
-UNLOCK TABLES;
+DROP TABLE IF EXISTS `user_login_fingerprints`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `user_login_fingerprints` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` int NOT NULL,
+  `fingerprint` char(64) NOT NULL,
+  `ip` varbinary(16) DEFAULT NULL,
+  `user_agent` varchar(255) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `last_seen_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_user_fingerprint` (`user_id`,`fingerprint`),
+  KEY `idx_user_seen` (`user_id`,`last_seen_at`),
+  CONSTRAINT `fk_login_fingerprint_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
 -- Table structure for table `notification_type_prefs`
@@ -693,14 +705,30 @@ CREATE TABLE `notification_type_prefs` (
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
--- Dumping data for table `notification_type_prefs`
+-- Table structure for table `notification_preferences`
 --
 
-LOCK TABLES `notification_type_prefs` WRITE;
-/*!40000 ALTER TABLE `notification_type_prefs` DISABLE KEYS */;
-INSERT INTO `notification_type_prefs` VALUES (1,'digest.weekly',0,0,0,NULL,'2025-11-13 15:10:59'),(1,'marketing.campaign',0,0,0,NULL,'2025-11-13 14:43:26'),(1,'note.activity',1,0,1,NULL,'2025-11-02 23:09:57'),(1,'security.login_alert',0,0,1,NULL,'2025-11-13 15:31:05'),(1,'security.password_change',1,0,1,NULL,'2025-11-13 15:31:05'),(1,'security.password_reset',1,0,1,NULL,'2025-11-13 15:31:05'),(1,'system.alert',0,0,1,NULL,'2025-11-13 15:31:05'),(1,'system.broadcast',0,0,0,NULL,'2025-11-13 15:31:05'),(1,'task.assigned',1,0,1,NULL,'2025-11-13 15:31:05'),(1,'task.unassigned',0,0,0,NULL,'2025-11-13 15:31:05'),(1,'task.updated',0,0,0,NULL,'2025-11-13 15:31:05');
-/*!40000 ALTER TABLE `notification_type_prefs` ENABLE KEYS */;
-UNLOCK TABLES;
+DROP TABLE IF EXISTS `notification_preferences`;
+/*!40101 SET @saved_cs_client     = @@character_set_client */;
+/*!50503 SET character_set_client = utf8mb4 */;
+CREATE TABLE `notification_preferences` (
+  `user_id` int NOT NULL,
+  `allow_in_app` tinyint(1) NOT NULL DEFAULT '1',
+  `allow_email` tinyint(1) NOT NULL DEFAULT '0',
+  `allow_push` tinyint(1) NOT NULL DEFAULT '0',
+  `type_task` tinyint(1) NOT NULL DEFAULT '1',
+  `type_note` tinyint(1) NOT NULL DEFAULT '1',
+  `type_system` tinyint(1) NOT NULL DEFAULT '1',
+  `type_password_reset` tinyint(1) NOT NULL DEFAULT '1',
+  `type_security` tinyint(1) NOT NULL DEFAULT '1',
+  `type_digest` tinyint(1) NOT NULL DEFAULT '1',
+  `type_marketing` tinyint(1) NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `fk_np_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+/*!40101 SET character_set_client = @saved_cs_client */;
 
 --
 -- Table structure for table `notifications`
@@ -771,7 +799,7 @@ CREATE TABLE `public_room_hits` (
 
 LOCK TABLES `public_room_hits` WRITE;
 /*!40000 ALTER TABLE `public_room_hits` DISABLE KEYS */;
-INSERT INTO `public_room_hits` VALUES (1,1,163,'2025-10-27 11:50:31',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(2,1,163,'2025-10-27 12:11:26',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(3,135,26,'2025-10-27 16:26:50',_binary 'h<t','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(4,92,132,'2025-10-30 09:18:03',_binary 'h‚f','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(5,94,134,'2025-10-30 09:18:37',_binary 'h<t','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(6,1,163,'2025-11-03 10:46:42',_binary 'h<s','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(7,136,5,'2025-11-03 11:12:46',_binary 'h<t','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(8,136,5,'2025-11-03 11:23:02',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(9,136,5,'2025-11-03 14:02:25',_binary 'hj~','Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'),(10,135,26,'2025-11-03 14:23:31',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(11,136,5,'2025-11-03 16:31:35',_binary 'h‚g','Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'),(12,90,130,'2025-11-03 17:16:15',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(13,257,270,'2025-11-10 02:10:58',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(14,136,5,'2025-11-10 02:47:37',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(15,268,281,'2025-11-11 20:45:54',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(16,136,5,'2025-11-11 22:01:38',_binary '.¡@\Â','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(17,136,5,'2025-11-11 22:09:33',_binary '.¡@\Â','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(18,136,5,'2025-11-11 22:10:03',_binary '.¡@\Â','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(19,136,5,'2025-11-11 22:10:50',_binary '.¡@\Â','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(20,1,163,'2025-11-11 22:12:48',_binary '.¡@\Â','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36');
+INSERT INTO `public_room_hits` VALUES (1,1,163,'2025-10-27 11:50:31',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(2,1,163,'2025-10-27 12:11:26',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(3,135,26,'2025-10-27 16:26:50',_binary 'h<t','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(4,92,132,'2025-10-30 09:18:03',_binary 'hï¿½f','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(5,94,134,'2025-10-30 09:18:37',_binary 'h<t','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(6,1,163,'2025-11-03 10:46:42',_binary 'h<s','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(7,136,5,'2025-11-03 11:12:46',_binary 'h<t','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1'),(8,136,5,'2025-11-03 11:23:02',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(9,136,5,'2025-11-03 14:02:25',_binary 'hj~','Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'),(10,135,26,'2025-11-03 14:23:31',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(11,136,5,'2025-11-03 16:31:35',_binary 'hï¿½g','Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1'),(12,90,130,'2025-11-03 17:16:15',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'),(13,257,270,'2025-11-10 02:10:58',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(14,136,5,'2025-11-10 02:47:37',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(15,268,281,'2025-11-11 20:45:54',_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(16,136,5,'2025-11-11 22:01:38',_binary '.ï¿½@\ï¿½','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(17,136,5,'2025-11-11 22:09:33',_binary '.ï¿½@\ï¿½','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(18,136,5,'2025-11-11 22:10:03',_binary '.ï¿½@\ï¿½','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(19,136,5,'2025-11-11 22:10:50',_binary '.ï¿½@\ï¿½','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'),(20,1,163,'2025-11-11 22:12:48',_binary '.ï¿½@\ï¿½','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36');
 /*!40000 ALTER TABLE `public_room_hits` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -899,7 +927,7 @@ CREATE TABLE `public_token_hits` (
 
 LOCK TABLES `public_token_hits` WRITE;
 /*!40000 ALTER TABLE `public_token_hits` DISABLE KEYS */;
-INSERT INTO `public_token_hits` VALUES (1,1,316,_binary '¬\á\ãW','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1','2025-10-27 11:39:43'),(2,1,316,_binary '¬\á\ãW','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1','2025-10-27 11:39:55'),(3,1,316,_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36','2025-10-27 11:42:50'),(4,13,2424,_binary 'hbH','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1','2025-10-27 16:25:44'),(5,2897,5019,_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36','2025-11-10 01:55:23');
+INSERT INTO `public_token_hits` VALUES (1,1,316,_binary 'ï¿½\ï¿½\ï¿½W','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1','2025-10-27 11:39:43'),(2,1,316,_binary 'ï¿½\ï¿½\ï¿½W','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1','2025-10-27 11:39:55'),(3,1,316,_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36','2025-10-27 11:42:50'),(4,13,2424,_binary 'hbH','Mozilla/5.0 (iPhone; CPU iPhone OS 18_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1','2025-10-27 16:25:44'),(5,2897,5019,_binary '>>b','Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36','2025-11-10 01:55:23');
 /*!40000 ALTER TABLE `public_token_hits` ENABLE KEYS */;
 UNLOCK TABLES;
 

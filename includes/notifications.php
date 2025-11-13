@@ -11,6 +11,100 @@ function notif_pdo(): PDO {
 $GLOBALS['notif_type_pref_cache'] = $GLOBALS['notif_type_pref_cache'] ?? [];
 $GLOBALS['notif_global_pref_cache'] = $GLOBALS['notif_global_pref_cache'] ?? [];
 
+/**
+ * Return a map of logical notification column names to the physical column
+ * names present in the database. This keeps the runtime compatible with
+ * deployments that still use the legacy `link` / `payload` columns.
+ */
+function notif_notifications_column_map(): array {
+    static $map;
+    if ($map !== null) {
+        return $map;
+    }
+
+    $defaults = [
+        'url'        => 'url',
+        'data'       => 'data',
+        'read_at'    => 'read_at',
+        'created_at' => 'created_at',
+    ];
+
+    try {
+        $pdo = notif_pdo();
+        $stmt = $pdo->query('SHOW COLUMNS FROM notifications');
+        if ($stmt) {
+            $columns = [];
+            foreach ($stmt as $row) {
+                $field = $row['Field'] ?? null;
+                if ($field !== null) {
+                    $columns[] = $field;
+                }
+            }
+
+            $has = static function (array $cols, string $name): bool {
+                return in_array($name, $cols, true);
+            };
+
+            if (!$has($columns, 'url') && $has($columns, 'link')) {
+                $defaults['url'] = 'link';
+            }
+            if (!$has($columns, 'data') && $has($columns, 'payload')) {
+                $defaults['data'] = 'payload';
+            }
+            if (!$has($columns, 'read_at')) {
+                if ($has($columns, 'opened_at')) {
+                    $defaults['read_at'] = 'opened_at';
+                } else {
+                    unset($defaults['read_at']);
+                }
+            }
+            if (!$has($columns, 'created_at')) {
+                if ($has($columns, 'created')) {
+                    $defaults['created_at'] = 'created';
+                } else {
+                    unset($defaults['created_at']);
+                }
+            }
+        }
+    } catch (Throwable $e) {
+        // fall back to defaults defined above
+    }
+
+    return $map = $defaults;
+}
+
+/** Normalise a notification row to always expose url/data/read_at keys. */
+function notif_normalize_row(array $row): array {
+    $map = notif_notifications_column_map();
+
+    if (isset($map['url'])) {
+        $column = $map['url'];
+        if (!array_key_exists('url', $row)) {
+            $row['url'] = $row[$column] ?? null;
+        }
+    }
+    if (isset($map['data'])) {
+        $column = $map['data'];
+        if (!array_key_exists('data', $row)) {
+            $row['data'] = $row[$column] ?? null;
+        }
+    }
+    if (isset($map['read_at'])) {
+        $column = $map['read_at'];
+        if (!array_key_exists('read_at', $row)) {
+            $row['read_at'] = $row[$column] ?? null;
+        }
+    }
+    if (isset($map['created_at'])) {
+        $column = $map['created_at'];
+        if (!array_key_exists('created_at', $row)) {
+            $row['created_at'] = $row[$column] ?? null;
+        }
+    }
+
+    return $row;
+}
+
 /** List of supported notification types and metadata. */
 function notif_type_catalog(): array {
     static $catalog;
@@ -464,10 +558,35 @@ function notif_emit(array $args): ?int {
 
     $readAt = $allow_web ? null : date('Y-m-d H:i:s');
 
-    $stmt = $pdo->prepare("INSERT INTO notifications
-          (user_id, actor_user_id, type, entity_type, entity_id, title, body, data, url, is_read, read_at)
-          VALUES (:u,:a,:t,:et,:eid,:ti,:bo,:da,:url,:is_read,:read_at)");
-    $stmt->execute([
+    $columnMap = notif_notifications_column_map();
+    $urlColumn = $columnMap['url'] ?? 'url';
+    $dataColumn = $columnMap['data'] ?? 'data';
+    $readColumn = $columnMap['read_at'] ?? null;
+
+    $columns = [
+        '`user_id`',
+        '`actor_user_id`',
+        '`type`',
+        '`entity_type`',
+        '`entity_id`',
+        '`title`',
+        '`body`',
+        "`{$dataColumn}`",
+        "`{$urlColumn}`",
+        '`is_read`',
+    ];
+    $placeholders = [':u', ':a', ':t', ':et', ':eid', ':ti', ':bo', ':da', ':url', ':is_read'];
+
+    if ($readColumn) {
+        $columns[] = "`{$readColumn}`";
+        $placeholders[] = ':read_at';
+    }
+
+    $sql = 'INSERT INTO notifications (' . implode(', ', $columns) . ')
+            VALUES (' . implode(', ', $placeholders) . ')';
+
+    $stmt = $pdo->prepare($sql);
+    $params = [
         ':u'       => $userId,
         ':a'       => isset($args['actor_user_id']) ? (int)$args['actor_user_id'] : null,
         ':t'       => $type,
@@ -478,8 +597,12 @@ function notif_emit(array $args): ?int {
         ':da'      => !empty($args['data']) ? json_encode($args['data'], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES) : null,
         ':url'     => $args['url'] ?? null,
         ':is_read' => $allow_web ? 0 : 1,
-        ':read_at' => $allow_web ? null : $readAt,
-    ]);
+    ];
+    if ($readColumn) {
+        $params[':read_at'] = $allow_web ? null : $readAt;
+    }
+
+    $stmt->execute($params);
     $notifId = (int)$pdo->lastInsertId();
 
     // Queue background channels (email/push) if allowed for this user+type
@@ -537,12 +660,27 @@ function notif_unread_count(int $userId): int {
 function notif_recent_unread(int $userId, int $limit = 3): array {
     $limit = max(1, (int)$limit);
     $pdo = notif_pdo();
-    $st = $pdo->prepare("SELECT id, title, body, url, created_at FROM notifications WHERE user_id = :u AND is_read = 0 ORDER BY id DESC LIMIT :lim");
+    $map = notif_notifications_column_map();
+    $urlColumn = $map['url'] ?? 'url';
+    $createdColumn = $map['created_at'] ?? 'created_at';
+
+    $sql = sprintf(
+        'SELECT id, title, body, %s AS url, %s AS created_at
+         FROM notifications
+         WHERE user_id = :u AND is_read = 0
+         ORDER BY id DESC
+         LIMIT :lim',
+        "`{$urlColumn}`",
+        "`{$createdColumn}`"
+    );
+
+    $st = $pdo->prepare($sql);
     $st->bindValue(':u', $userId, PDO::PARAM_INT);
     $st->bindValue(':lim', $limit, PDO::PARAM_INT);
     $st->execute();
     $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
     return array_map(static function ($row) {
+        $row = notif_normalize_row($row);
         return [
             'id'         => (int)($row['id'] ?? 0),
             'title'      => $row['title'] ?? '',
@@ -556,26 +694,56 @@ function notif_recent_unread(int $userId, int $limit = 3): array {
 /** Paginated list */
 function notif_list(int $userId, int $limit = 20, int $offset = 0): array {
     $pdo = notif_pdo();
-    $st = $pdo->prepare("SELECT * FROM notifications
-                         WHERE user_id=:u
-                         ORDER BY id DESC
-                         LIMIT :lim OFFSET :off");
+    $map = notif_notifications_column_map();
+    $urlColumn = $map['url'] ?? 'url';
+    $dataColumn = $map['data'] ?? 'data';
+    $readColumn = $map['read_at'] ?? null;
+    $createdColumn = $map['created_at'] ?? 'created_at';
+
+    $select = [
+        'id', 'user_id', 'type', 'entity_type', 'entity_id', 'title', 'body',
+        sprintf('`%s` AS url', $urlColumn),
+        sprintf('`%s` AS data', $dataColumn),
+        'is_read',
+    ];
+    if ($readColumn) {
+        $select[] = sprintf('`%s` AS read_at', $readColumn);
+    }
+    $select[] = sprintf('`%s` AS created_at', $createdColumn);
+
+    $sql = 'SELECT ' . implode(', ', $select) . ' FROM notifications
+            WHERE user_id = :u
+            ORDER BY id DESC
+            LIMIT :lim OFFSET :off';
+
+    $st = $pdo->prepare($sql);
     $st->bindValue(':u', $userId, PDO::PARAM_INT);
     $st->bindValue(':lim', $limit, PDO::PARAM_INT);
     $st->bindValue(':off', $offset, PDO::PARAM_INT);
     $st->execute();
-    return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    return array_map('notif_normalize_row', $rows);
 }
 
 /** Lightweight list of the latest notifications for quick previews. */
 function notif_recent(int $userId, int $limit = 3): array {
     $limit = max(1, min(10, $limit));
     $pdo   = notif_pdo();
-    $sql   = "SELECT id, title, body, url, is_read, created_at, type
-              FROM notifications
-              WHERE user_id = :u
-              ORDER BY id DESC
-              LIMIT :lim";
+    $map = notif_notifications_column_map();
+    $urlColumn = $map['url'] ?? 'url';
+    $createdColumn = $map['created_at'] ?? 'created_at';
+
+    $sql   = sprintf(
+        'SELECT id, title, body, `%s` AS url, is_read, `%s` AS created_at, type
+         FROM notifications
+         WHERE user_id = :u
+         ORDER BY id DESC
+         LIMIT :lim',
+        $urlColumn,
+        $createdColumn
+    );
+
     $stmt  = $pdo->prepare($sql);
     $stmt->bindValue(':u', $userId, PDO::PARAM_INT);
     $stmt->bindValue(':lim', $limit, PDO::PARAM_INT);
@@ -583,6 +751,7 @@ function notif_recent(int $userId, int $limit = 3): array {
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
     return array_map(static function (array $row): array {
+        $row = notif_normalize_row($row);
         return [
             'id'         => (int)($row['id'] ?? 0),
             'title'      => (string)($row['title'] ?? ''),
@@ -597,12 +766,24 @@ function notif_recent(int $userId, int $limit = 3): array {
 
 function notif_mark_read(int $userId, int $notifId): void {
     $pdo = notif_pdo();
-    $sql = "UPDATE notifications SET is_read=1, read_at=NOW() WHERE id=:id AND user_id=:u";
+    $map = notif_notifications_column_map();
+    $readColumn = $map['read_at'] ?? null;
+    $sql = 'UPDATE notifications SET is_read=1';
+    if ($readColumn) {
+        $sql .= ', `' . $readColumn . '` = NOW()';
+    }
+    $sql .= ' WHERE id=:id AND user_id=:u';
     $pdo->prepare($sql)->execute([':id' => $notifId, ':u' => $userId]);
 }
 function notif_mark_unread(int $userId, int $notifId): void {
     $pdo = notif_pdo();
-    $sql = "UPDATE notifications SET is_read=0, read_at=NULL WHERE id=:id AND user_id=:u";
+    $map = notif_notifications_column_map();
+    $readColumn = $map['read_at'] ?? null;
+    $sql = 'UPDATE notifications SET is_read=0';
+    if ($readColumn) {
+        $sql .= ', `' . $readColumn . '` = NULL';
+    }
+    $sql .= ' WHERE id=:id AND user_id=:u';
     $pdo->prepare($sql)->execute([':id' => $notifId, ':u' => $userId]);
 }
 function notif_delete(int $userId, int $notifId): void {
@@ -612,7 +793,13 @@ function notif_delete(int $userId, int $notifId): void {
 }
 function notif_mark_all_read(int $userId): void {
     $pdo = notif_pdo();
-    $sql = "UPDATE notifications SET is_read=1, read_at=NOW() WHERE user_id=:u AND is_read=0";
+    $map = notif_notifications_column_map();
+    $readColumn = $map['read_at'] ?? null;
+    $sql = 'UPDATE notifications SET is_read=1';
+    if ($readColumn) {
+        $sql .= ', `' . $readColumn . '` = NOW()';
+    }
+    $sql .= ' WHERE user_id=:u AND is_read=0';
     $pdo->prepare($sql)->execute([':u' => $userId]);
 }
 function notif_touch_web_device(int $userId, string $userAgent): void {
@@ -857,14 +1044,11 @@ function notif_process_push_queue(int $limit = 25): array {
     try {
         $pdo = notif_pdo();
         $pdo->beginTransaction();
-        $stmt = $pdo->prepare(
-    'SELECT id, notification_id
-     FROM notification_channels_queue
-     WHERE channel = \'push\' AND status = \'pending\'
-     ORDER BY id ASC
-     LIMIT :lim FOR UPDATE SKIP LOCKED'
-);
-
+        $stmt = $pdo->prepare('SELECT id, notification_id
+                                FROM notification_channels_queue
+                                WHERE channel = \"push\" AND status = \"pending\"
+                                ORDER BY id ASC
+                                LIMIT :lim FOR UPDATE SKIP LOCKED');
         $stmt->bindValue(':lim', max(1, (int)$limit), PDO::PARAM_INT);
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -897,7 +1081,18 @@ function notif_process_push_queue(int $limit = 25): array {
 
         try {
             $pdo = notif_pdo();
-            $stmt = $pdo->prepare('SELECT id, user_id, type, title, body, url, data, created_at FROM notifications WHERE id = :id LIMIT 1');
+            $map = notif_notifications_column_map();
+            $urlColumn = $map['url'] ?? 'url';
+            $dataColumn = $map['data'] ?? 'data';
+            $createdColumn = $map['created_at'] ?? 'created_at';
+            $sql = sprintf(
+                'SELECT id, user_id, type, title, body, `%s` AS url, `%s` AS data, `%s` AS created_at
+                 FROM notifications WHERE id = :id LIMIT 1',
+                $urlColumn,
+                $dataColumn,
+                $createdColumn
+            );
+            $stmt = $pdo->prepare($sql);
             $stmt->execute([':id' => $notificationId]);
             $notification = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$notification) {
