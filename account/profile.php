@@ -331,46 +331,12 @@ function profile_describe_security_event(array $row): array
 
 function profile_notification_types(): array
 {
-    return [
-        'task.assigned'   => [
-            'label'       => 'Task assignments',
-            'description' => 'Alerts when someone assigns a task to you or your team.',
-        ],
-        'task.updated'    => [
-            'label'       => 'Task progress',
-            'description' => 'Heads-up when priority, due dates, or status change on tasks you follow.',
-        ],
-        'note.activity'   => [
-            'label'       => 'Note collaboration',
-            'description' => 'Comments, mentions, and edits on notes you created or follow.',
-        ],
-        'system.broadcast'=> [
-            'label'       => 'System announcements',
-            'description' => 'Release notes and scheduled maintenance updates from the team.',
-        ],
-        'security.login_alert' => [
-            'label'       => 'Sign-in alerts',
-            'description' => 'Ping me when a new device signs in with my account.',
-        ],
-        'digest.weekly' => [
-            'label'       => 'Weekly digest',
-            'description' => 'Friday recap email with overdue tasks and unread notes.',
-        ],
-    ];
+    return notif_type_catalog();
 }
 
 function profile_fetch_notification_devices(int $localUserId): array
 {
-    try {
-        $pdo = notif_pdo();
-        $stmt = $pdo->prepare('SELECT id, kind, user_agent, created_at, last_used_at '
-                             . 'FROM notification_devices WHERE user_id = :u '
-                             . 'ORDER BY COALESCE(last_used_at, created_at) DESC');
-        $stmt->execute([':u' => $localUserId]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-    } catch (Throwable $e) {
-        return [];
-    }
+    return notif_fetch_devices($localUserId);
 }
 
 function profile_membership_summary(?string $createdAt): array
@@ -818,7 +784,11 @@ if (function_exists('notif_resolve_local_user_id')) {
     }
 }
 $notificationsAvailable = $notificationUserId !== null;
-$notificationDevices = ($notificationsAvailable) ? profile_fetch_notification_devices($notificationUserId) : [];
+$notificationGlobals = $notificationsAvailable
+    ? notif_get_global_preferences($notificationUserId)
+    : notif_default_preferences();
+$notificationDevices = $notificationsAvailable ? profile_fetch_notification_devices($notificationUserId) : [];
+$vapidReady = notif_vapid_ready();
 $sectorOptions = profile_fetch_sectors($pdo);
 
 /* ---------- POST handlers ---------- */
@@ -936,6 +906,24 @@ if (is_post()) {
             if (!$notificationsAvailable) {
                 $errors[] = 'Notification preferences are not available right now.';
             } else {
+                $globalInput = $_POST['global'] ?? [];
+                $allowInApp = !empty($globalInput['allow_in_app']);
+                $allowEmail = !empty($globalInput['allow_email']);
+                $allowPush  = !empty($globalInput['allow_push']);
+
+                $categoryToggles = $notificationGlobals['types'] ?? [];
+                $categoryInput   = isset($globalInput['types']) && is_array($globalInput['types']) ? $globalInput['types'] : [];
+                foreach ($categoryToggles as $key => $value) {
+                    $categoryToggles[$key] = !empty($categoryInput[$key]);
+                }
+
+                $pendingGlobal = [
+                    'allow_in_app' => $allowInApp,
+                    'allow_email'  => $allowEmail,
+                    'allow_push'   => $allowPush,
+                    'types'        => $categoryToggles,
+                ];
+
                 $prefsInput = $_POST['prefs'] ?? [];
                 $now = new DateTimeImmutable('now');
                 foreach ($notificationTypes as $type => $meta) {
@@ -985,6 +973,12 @@ if (is_post()) {
                     }
 
                     $update['mute_until'] = $muteUntil;
+                    $notificationPrefs[$type] = [
+                        'allow_web'   => !empty($update['allow_web']),
+                        'allow_email' => !empty($update['allow_email']),
+                        'allow_push'  => !empty($update['allow_push']),
+                        'mute_until'  => $muteUntil,
+                    ];
 
                     try {
                         notif_set_type_pref($notificationUserId, $type, $update);
@@ -995,7 +989,10 @@ if (is_post()) {
                 }
 
                 if (!$errors) {
-                    redirect_with_message('/account/profile.php', 'Notification preferences updated.', 'success');
+                    notif_set_global_preferences($notificationUserId, $pendingGlobal);
+                    redirect_with_message('/account/profile.php#notification-preferences', 'Notification preferences updated.', 'success');
+                } else {
+                    $notificationGlobals = $pendingGlobal;
                 }
             }
         }
@@ -1032,6 +1029,7 @@ if (is_post()) {
 
     if ($notificationsAvailable) {
         $notificationPrefs = [];
+        $notificationGlobals = notif_get_global_preferences($notificationUserId);
         foreach ($notificationTypes as $type => $meta) {
             try {
                 $pref = notif_get_type_pref($notificationUserId, $type);
@@ -1295,7 +1293,7 @@ include __DIR__ . '/../includes/header.php';
           </div>
         </form>
 
-        <form method="post" class="profile-panel profile-panel--wide card">
+        <form method="post" class="profile-panel profile-panel--wide card" id="notification-preferences">
           <div class="profile-panel__header">
             <h2>Notification preferences</h2>
             <p class="profile-panel__subtitle">Choose how we reach you about new work.</p>
@@ -1311,6 +1309,44 @@ include __DIR__ . '/../includes/header.php';
                 <span class="profile-panel__summary-chip profile-panel__summary-chip--muted"><?php echo (int)$notificationSummary['snoozed']; ?> snoozed</span>
               <?php endif; ?>
             </div>
+            <div class="profile-panel__body pref-globals">
+              <h3 class="profile-subheading">Channels</h3>
+              <div class="pref-switch-grid">
+                <label class="switch">
+                  <input type="checkbox" name="global[allow_in_app]" value="1"<?php echo !empty($notificationGlobals['allow_in_app']) ? ' checked' : ''; ?>>
+                  <span class="switch__control" aria-hidden="true"></span>
+                  <span class="switch__label">In-app alerts</span>
+                  <span class="switch__note">Show notifications inside the app.</span>
+                </label>
+                <label class="switch">
+                  <input type="checkbox" name="global[allow_email]" value="1"<?php echo !empty($notificationGlobals['allow_email']) ? ' checked' : ''; ?>>
+                  <span class="switch__control" aria-hidden="true"></span>
+                  <span class="switch__label">Email</span>
+                  <span class="switch__note">Send email copies when available.</span>
+                </label>
+                <label class="switch">
+                  <input type="checkbox" name="global[allow_push]" value="1"<?php echo !empty($notificationGlobals['allow_push']) ? ' checked' : ''; ?>>
+                  <span class="switch__control" aria-hidden="true"></span>
+                  <span class="switch__label">Push</span>
+                  <span class="switch__note">Notify browsers and mobile devices.</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="profile-panel__body pref-globals">
+              <h3 class="profile-subheading">Categories</h3>
+              <div class="pref-switch-grid pref-switch-grid--wrap">
+                <?php foreach ($notificationGlobals['types'] as $category => $enabled): ?>
+                  <?php $catLabel = ucwords(str_replace('_', ' ', (string)$category)); ?>
+                  <label class="switch">
+                    <input type="checkbox" name="global[types][<?php echo sanitize($category); ?>]" value="1"<?php echo $enabled ? ' checked' : ''; ?>>
+                    <span class="switch__control" aria-hidden="true"></span>
+                    <span class="switch__label"><?php echo sanitize($catLabel); ?></span>
+                  </label>
+                <?php endforeach; ?>
+              </div>
+            </div>
+
             <div class="profile-panel__body pref-list">
               <?php foreach ($notificationTypes as $type => $meta):
                 $pref      = $notificationPrefs[$type] ?? ['allow_web' => true, 'allow_email' => false, 'allow_push' => false, 'mute_until' => null];
@@ -1407,16 +1443,26 @@ include __DIR__ . '/../includes/header.php';
           </div>
         </section>
 
-        <section class="profile-panel card">
+        <section class="profile-panel card" id="push-devices">
           <div class="profile-panel__header">
             <h2>Trusted devices</h2>
             <p class="profile-panel__subtitle">Disconnect browsers or mobiles you no longer recognize.</p>
           </div>
-          <div class="profile-panel__body">
+          <div class="profile-panel__body" data-push-devices-region>
             <?php if (!$notificationsAvailable): ?>
               <p class="muted">Connect a device to enable web or push notifications.</p>
-            <?php elseif ($notificationDevices): ?>
-              <ul class="device-list">
+            <?php else: ?>
+              <?php if (!$vapidReady): ?>
+                <p class="muted">Push notifications are disabled until an administrator configures VAPID keys.</p>
+              <?php endif; ?>
+              <p class="muted" data-push-status>Push notifications: <strong data-push-status-text>Checking…</strong></p>
+              <?php if ($vapidReady): ?>
+                <div class="device-actions">
+                  <button type="button" class="btn secondary small" data-push-action="disable">Disable push on this browser</button>
+                </div>
+              <?php endif; ?>
+              <p class="muted" data-push-empty <?php echo $notificationDevices ? 'hidden' : ''; ?>>No connected browsers or mobile devices yet.</p>
+              <ul class="device-list" data-push-device-list <?php echo $notificationDevices ? '' : 'hidden'; ?>>
                 <?php foreach ($notificationDevices as $device):
                   $kind = (string)($device['kind'] ?? 'webpush');
                   $kindLabel = match ($kind) {
@@ -1429,7 +1475,7 @@ include __DIR__ . '/../includes/header.php';
                   $lastFormatted = profile_format_datetime($lastUsed);
                   $uaLabel = profile_summarize_user_agent($device['user_agent'] ?? '');
                 ?>
-                  <li class="device-row">
+                  <li class="device-row" data-device-id="<?php echo (int)$device['id']; ?>">
                     <div class="device-row__main">
                       <span class="device-row__kind"><?php echo sanitize($kindLabel); ?></span>
                       <div class="device-row__text">
@@ -1448,8 +1494,6 @@ include __DIR__ . '/../includes/header.php';
                   </li>
                 <?php endforeach; ?>
               </ul>
-            <?php else: ?>
-              <p class="muted">No connected browsers or mobile devices yet.</p>
             <?php endif; ?>
           </div>
         </section>
