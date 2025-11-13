@@ -62,7 +62,7 @@ if (is_post()) {
                         ':pass_hash' => $hash,
                         ':role' => $roleSlug,
                     ]);
-                    log_event('user.create', 'user', $userId, ['role' => $roleSlug, 'sector_id' => $sectorId]);
+                    log_event('user.create', 'user', $userId, ['role' => $roleSlug, 'sector_id' => $sectorId, 'email' => $email]);
                     redirect_with_message('users.php', 'User created.');
                 } catch (Throwable $e) {
                     if (!empty($userId)) {
@@ -116,7 +116,7 @@ if (is_post()) {
                             ':pass_hash' => $hash,
                             ':role' => $roleSlug,
                         ]);
-                        log_event('user.update', 'user', $userId, ['role' => $roleSlug, 'sector_id' => $sectorId]);
+                        log_event('user.update', 'user', $userId, ['role' => $roleSlug, 'sector_id' => $sectorId, 'email' => $email]);
                         redirect_with_message('users.php', 'User updated.');
                     }
                 } catch (Throwable $e) {

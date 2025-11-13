@@ -67,7 +67,7 @@ if (($_GET['action'] ?? '') === 'connect') {
         try {
             $st = $pdo->prepare("SELECT allow_web, mute_until
                                  FROM notification_type_prefs
-                                 WHERE user_id = :u AND type = :t LIMIT 1");
+                                 WHERE user_id = :u AND notif_type = :t LIMIT 1");
             $st->execute([':u'=>$userId, ':t'=>$type]);
             $row = $st->fetch(PDO::FETCH_ASSOC);
             if (!$row) return true; // default allow
@@ -78,6 +78,11 @@ if (($_GET['action'] ?? '') === 'connect') {
             return true; // fail-open
         }
     };
+
+    $columnMap = notif_notifications_column_map();
+    $urlColumn = $columnMap['url'] ?? 'url';
+    $dataColumn = $columnMap['data'] ?? 'data';
+    $createdColumn = $columnMap['created_at'] ?? 'created_at';
 
     // Resume cursor from Last-Event-ID header or ?cursor=
     $cursor = 0;
@@ -94,28 +99,35 @@ if (($_GET['action'] ?? '') === 'connect') {
     $endAt   = time() + 110; // ~2 minutes per connection
     while (!connection_aborted() && time() < $endAt) {
         // Fetch new rows for this user since cursor
-        $st = $pdo->prepare("
-            SELECT
-              nr.id AS rid,
-              n.type, n.title, n.body, n.link, n.payload, n.created_at
-            FROM notification_recipients nr
-            JOIN notifications n ON n.id = nr.notification_id
-            WHERE nr.user_id = :u
-              AND nr.id > :cursor
-            ORDER BY nr.id ASC
-            LIMIT 50
-        ");
+        $sql = sprintf(
+            'SELECT
+                n.id,
+                n.type,
+                n.title,
+                n.body,
+                `%s` AS url,
+                `%s` AS payload,
+                `%s` AS created_at
+             FROM notifications n
+             WHERE n.user_id = :u
+               AND n.id > :cursor
+             ORDER BY n.id ASC
+             LIMIT 50',
+            $urlColumn,
+            $dataColumn,
+            $createdColumn
+        );
+        $st = $pdo->prepare($sql);
         $st->execute([':u' => $userId, ':cursor' => $cursor]);
         $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-        $deliveredIds = [];
         foreach ($rows as $r) {
             $type = (string)$r['type'];
             if (!$shouldDeliver($userId, $type)) {
                 // Skip delivering, but don't advance cursor past it (so we reconsider later)
                 continue;
             }
-            $rid = (int)$r['rid'];
+            $rid = (int)$r['id'];
             $payload = [];
             if (!empty($r['payload'])) {
                 $dec = json_decode((string)$r['payload'], true);
@@ -126,22 +138,12 @@ if (($_GET['action'] ?? '') === 'connect') {
                 'type'    => $type,
                 'title'   => (string)$r['title'],
                 'body'    => (string)$r['body'],
-                'link'    => (string)($r['link'] ?? ''),
+                'link'    => (string)($r['url'] ?? ''),
                 'created' => (string)$r['created_at'],
                 'payload' => $payload,
             ];
             $send('notify', $data, $rid);
             $cursor = $rid;
-            $deliveredIds[] = $rid;
-        }
-
-        // Mark delivered_at for those we actually sent
-        if ($deliveredIds) {
-            $in = implode(',', array_fill(0, count($deliveredIds), '?'));
-            $sql = "UPDATE notification_recipients SET delivered_at = NOW() WHERE id IN ($in) AND user_id = ?";
-            try {
-                $pdo->prepare($sql)->execute([...$deliveredIds, $userId]);
-            } catch (Throwable $e) {}
         }
 
         // Heartbeat (keeps proxies happy)

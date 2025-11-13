@@ -331,46 +331,12 @@ function profile_describe_security_event(array $row): array
 
 function profile_notification_types(): array
 {
-    return [
-        'task.assigned'   => [
-            'label'       => 'Task assignments',
-            'description' => 'Alerts when someone assigns a task to you or your team.',
-        ],
-        'task.updated'    => [
-            'label'       => 'Task progress',
-            'description' => 'Heads-up when priority, due dates, or status change on tasks you follow.',
-        ],
-        'note.activity'   => [
-            'label'       => 'Note collaboration',
-            'description' => 'Comments, mentions, and edits on notes you created or follow.',
-        ],
-        'system.broadcast'=> [
-            'label'       => 'System announcements',
-            'description' => 'Release notes and scheduled maintenance updates from the team.',
-        ],
-        'security.login_alert' => [
-            'label'       => 'Sign-in alerts',
-            'description' => 'Ping me when a new device signs in with my account.',
-        ],
-        'digest.weekly' => [
-            'label'       => 'Weekly digest',
-            'description' => 'Friday recap email with overdue tasks and unread notes.',
-        ],
-    ];
+    return notif_type_catalog();
 }
 
 function profile_fetch_notification_devices(int $localUserId): array
 {
-    try {
-        $pdo = notif_pdo();
-        $stmt = $pdo->prepare('SELECT id, kind, user_agent, created_at, last_used_at '
-                             . 'FROM notification_devices WHERE user_id = :u '
-                             . 'ORDER BY COALESCE(last_used_at, created_at) DESC');
-        $stmt->execute([':u' => $localUserId]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-    } catch (Throwable $e) {
-        return [];
-    }
+    return notif_fetch_devices($localUserId);
 }
 
 function profile_membership_summary(?string $createdAt): array
