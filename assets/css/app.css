@@ -840,6 +840,14 @@ td,th{word-break:break-word;overflow-wrap:anywhere}
 .profile-help{margin:0;font-size:.82rem;color:var(--muted);}
 
 .pref-list{display:flex;flex-direction:column;gap:var(--s3);}
+.pref-globals{display:flex;flex-direction:column;gap:var(--s2);padding:var(--s3) 0;}
+.pref-switch-grid{display:flex;flex-wrap:wrap;gap:var(--s3);}
+.pref-switch-grid .switch{flex:1 1 220px;min-width:200px;}
+.pref-switch-grid--wrap{flex-wrap:wrap;}
+.profile-subheading{margin:0 0 .4rem;font-size:.95rem;font-weight:700;color:var(--ink-2);}
+.switch__note{display:block;font-size:.78rem;color:var(--muted);margin-top:.3rem;}
+.device-actions{margin:.8rem 0;}
+.device-actions .btn{margin-right:.5rem;}
 .pref-row{display:grid;gap:var(--s3);padding:var(--s3);border:1px solid var(--line);border-radius:14px;background:#fff;}
 .pref-row__info h3{margin:0;font-size:1.02rem;font-weight:800;color:var(--ink-2);}
 .pref-row__info p{margin:0;}

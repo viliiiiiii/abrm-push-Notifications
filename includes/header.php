@@ -229,7 +229,7 @@ $breadcrumbs = build_breadcrumbs($path);
             </div>
             <div class="nav__bell-popover__footer">
               <a href="/notifications/index.php">View all</a>
-              <a class="nav__bell-settings" href="/notifications/settings.php" title="Notification settings"><span aria-hidden="true">⚙️</span><span class="sr-only">Notification settings</span></a>
+              <a class="nav__bell-settings" href="/account/profile.php#notification-preferences" title="Notification settings"><span aria-hidden="true">⚙️</span><span class="sr-only">Notification settings</span></a>
             </div>
           </div>
         </div>

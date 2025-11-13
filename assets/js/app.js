@@ -70,6 +70,40 @@ function formatRelativeTime(isoString) {
   return diff < 0 ? `${value} ${label} ago` : `in ${value} ${label}`;
 }
 
+function summarizeUserAgent(agent = '') {
+  const raw = (agent || '').toString();
+  const lower = raw.toLowerCase();
+  if (!raw) return 'Unknown device';
+  if (lower.includes('iphone') || lower.includes('ipad') || lower.includes('ios')) {
+    if (lower.includes('crios')) return 'Chrome on iOS';
+    if (lower.includes('fxios')) return 'Firefox on iOS';
+    return 'Safari on iOS';
+  }
+  if (lower.includes('android')) {
+    if (lower.includes('firefox')) return 'Firefox on Android';
+    if (lower.includes('edg')) return 'Edge on Android';
+    if (lower.includes('chrome')) return 'Chrome on Android';
+    return 'Android browser';
+  }
+  if (lower.includes('mac os') || lower.includes('macintosh')) {
+    if (lower.includes('safari') && !lower.includes('chrome')) return 'Safari on macOS';
+    if (lower.includes('firefox')) return 'Firefox on macOS';
+    if (lower.includes('chrome')) return 'Chrome on macOS';
+  }
+  if (lower.includes('windows')) {
+    if (lower.includes('edg')) return 'Microsoft Edge';
+    if (lower.includes('firefox')) return 'Firefox on Windows';
+    if (lower.includes('chrome')) return 'Chrome on Windows';
+  }
+  if (lower.includes('linux')) {
+    if (lower.includes('firefox')) return 'Firefox on Linux';
+    if (lower.includes('chrome')) return 'Chrome on Linux';
+  }
+  const firstParen = raw.split('(')[0].trim();
+  if (firstParen) return firstParen.slice(0, 64);
+  return raw.slice(0, 64);
+}
+
 function initNav() {
   const toggle = document.getElementById('navToggle');
   const panel = document.getElementById('navPanel');
@@ -651,6 +685,81 @@ function initNotifications() {
   }
 }
 
+let pushAutoPromptAttempted = false;
+
+function pushHasPromptedBefore() {
+  try {
+    return sessionStorage.getItem('pushAutoPrompted') === '1';
+  } catch (err) {
+    return false;
+  }
+}
+
+function pushRememberPrompted() {
+  try {
+    sessionStorage.setItem('pushAutoPrompted', '1');
+  } catch (err) {
+    // ignore storage errors
+  }
+}
+
+function emitPushStatus(detail) {
+  document.dispatchEvent(new CustomEvent('push:status', { detail }));
+}
+
+function autoPromptPush(detail) {
+  if (!detail || !detail.supported) return;
+  if (typeof Notification === 'undefined') return;
+  if (pushAutoPromptAttempted) return;
+
+  if (Notification.permission === 'denied') {
+    pushAutoPromptAttempted = true;
+    pushRememberPrompted();
+    return;
+  }
+
+  if (Notification.permission === 'default' && pushHasPromptedBefore()) {
+    pushAutoPromptAttempted = true;
+    return;
+  }
+
+  pushAutoPromptAttempted = true;
+
+  const finalize = () => {
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission !== 'default') {
+      pushRememberPrompted();
+    } else {
+      pushAutoPromptAttempted = false;
+    }
+  };
+
+  if (typeof detail.ensureSubscription === 'function') {
+    detail.ensureSubscription({ force: false })
+      .then(() => {
+        finalize();
+        if (typeof detail.fetchStatus === 'function') {
+          detail.fetchStatus().then((status) => {
+            emitPushStatus(status);
+          }).catch(() => {});
+        }
+      })
+      .catch((err) => {
+        finalize();
+        if (err && err.message === 'permission_denied') {
+          emitPushStatus({ ok: false, error: 'permission_denied' });
+        }
+      });
+  } else {
+    finalize();
+  }
+}
+
+document.addEventListener('push:ready', (event) => autoPromptPush(event.detail));
+if (typeof window !== 'undefined' && window.__pushController) {
+  autoPromptPush(window.__pushController);
+}
+
 function initPush() {
   const body = document.body;
   if (!body) return;
@@ -830,34 +939,36 @@ function initPushControls() {
     const items = entries.map((device) => {
       const id = Number(device.id) || 0;
       const kindRaw = (device.kind || '').toString();
-      const kindLabel = kindRaw === 'webpush' ? 'Browser push' : kindRaw || 'Device';
-      const agent = device.user_agent ? sanitizeText(device.user_agent) : '';
-      const lastSeenRaw = device.last_used_at || device.created_at || '';
-      let lastSeenText = '';
-      if (lastSeenRaw) {
-        const relative = formatRelativeTime(lastSeenRaw.replace(' ', 'T'));
-        lastSeenText = `Last used ${lastSeenRaw}`;
+      let kindLabel = 'Web push';
+      if (kindRaw === 'fcm') kindLabel = 'Android push';
+      else if (kindRaw === 'apns') kindLabel = 'iOS push';
+      const uaSummary = sanitizeText(summarizeUserAgent(device.user_agent || ''));
+      const lastUsedRaw = device.last_used_at || device.created_at || '';
+      let metaHtml = '';
+      if (lastUsedRaw) {
+        const iso = lastUsedRaw.replace(' ', 'T');
+        const relative = formatRelativeTime(iso);
+        let metaText = `Last used ${lastUsedRaw}`;
         if (relative) {
-          lastSeenText += ` (${relative})`;
+          metaText = `Last used ${relative} · ${lastUsedRaw}`;
         }
-        lastSeenText = sanitizeText(lastSeenText);
+        metaHtml = `<div class="device-row__meta">${sanitizeText(metaText)}</div>`;
       }
-      const metaParts = [];
-      if (agent) metaParts.push(`<span>${agent}</span>`);
-      if (lastSeenText) metaParts.push(`<span>${lastSeenText}</span>`);
-      const metaHtml = metaParts.join('');
 
       return `
-        <li data-device-id="${id}">
-          <div class="device-meta">
-            <strong>${sanitizeText(kindLabel)}</strong>
-            ${metaHtml}
+        <li class="device-row" data-device-id="${id}">
+          <div class="device-row__main">
+            <span class="device-row__kind">${sanitizeText(kindLabel)}</span>
+            <div class="device-row__text">
+              <div class="device-row__label">${uaSummary}</div>
+              ${metaHtml}
+            </div>
           </div>
-          <form method="post" class="inline-form" onsubmit="return confirm('Remove this device?');">
-            <input type="hidden" name="intent" value="device-delete">
+          <form method="post" class="device-row__actions">
+            <input type="hidden" name="action" value="revoke_device">
             <input type="hidden" name="device_id" value="${id}">
             <input type="hidden" name="${csrfName}" value="${csrfToken}">
-            <button type="submit" class="btn link">Remove</button>
+            <button class="btn secondary small" type="submit">Disconnect</button>
           </form>
         </li>
       `;
@@ -871,22 +982,65 @@ function initPushControls() {
   let controller = { supported: false };
 
   const applyStatus = (result) => {
-    if (!result || result.ok === false) {
+    if (!result) {
       updateStatus('Unable to load status');
       renderDevices([]);
+      disableButtons();
       return;
     }
+    if (result.error === 'permission_denied') {
+      updateStatus('Permission denied');
+      renderDevices([]);
+      disableButtons();
+      return;
+    }
+    if (result.ok === false) {
+      updateStatus('Unable to load status');
+      const devices = Array.isArray(result.devices) ? result.devices : [];
+      renderDevices(devices);
+      disableButtons();
+      return;
+    }
+
     const devices = Array.isArray(result.devices) ? result.devices : [];
     renderDevices(devices);
+
     if (result.vapid_ready === false) {
       updateStatus('Push not configured');
+      disableButtons();
       return;
     }
-    if (result.allow_push) {
-      updateStatus(devices.length ? 'Enabled' : 'Ready');
-    } else {
-      updateStatus('Disabled');
+
+    if (!controller || !controller.supported) {
+      disableButtons();
+    } else if (buttons.length) {
+      enableButtons();
     }
+
+    if (result.allow_push) {
+      const count = devices.length;
+      if (count > 0) {
+        updateStatus(`Enabled on ${count} device${count === 1 ? '' : 's'}`);
+      } else {
+        updateStatus('Enabled');
+      }
+    } else {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'denied') {
+        updateStatus('Permission denied');
+        disableButtons();
+      } else if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        updateStatus('Awaiting permission');
+      } else {
+        updateStatus('Disabled');
+      }
+    }
+  };
+
+  const handleStatusBroadcast = (event) => {
+    if (!event || !event.detail) {
+      return;
+    }
+    applyStatus(event.detail);
   };
 
   const handleReady = async (event) => {
@@ -918,6 +1072,7 @@ function initPushControls() {
     try {
       const result = await controller.fetchStatus();
       applyStatus(result);
+      emitPushStatus(result);
     } catch (err) {
       console.warn('Push status fetch failed', err);
       updateStatus('Unable to load status');
@@ -925,6 +1080,7 @@ function initPushControls() {
     }
   };
 
+  document.addEventListener('push:status', handleStatusBroadcast);
   document.addEventListener('push:ready', handleReady);
   if (window.__pushController) {
     handleReady({ detail: window.__pushController });
@@ -942,9 +1098,11 @@ function initPushControls() {
           await controller.ensureSubscription({ force: true });
           const result = await controller.fetchStatus();
           applyStatus(result);
+          emitPushStatus(result);
         } else if (action === 'disable') {
           const result = await controller.unsubscribe({ disableAll: true });
           applyStatus(result);
+          emitPushStatus(result);
         }
       } catch (err) {
         updateStatus('Push failed');
@@ -964,6 +1122,7 @@ function initPushControls() {
         try {
           const result = await controller.fetchStatus();
           applyStatus(result);
+          emitPushStatus(result);
         } catch (err) {
           updateStatus('Unable to refresh status');
         }

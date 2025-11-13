@@ -89,5 +89,5 @@ For alternative storage backends (Ceph, OpenIO, etc.), adjust the endpoint and p
 
 - Generate VAPID keys with `php scripts/generate_vapid.php` and copy the values into `config.php` (`WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY`, `WEB_PUSH_VAPID_SUBJECT`).
 - The notification worker (`php scripts/notifications_worker.php [batchSize]`) processes queued push jobs; run it via cron or a supervisor alongside any email worker you maintain.
-- Users can manage per-channel and per-type preferences from `/notifications/settings.php`. The navigation bell dropdown includes a shortcut.
+- Users manage per-channel and per-type preferences from `/account/profile.php#notification-preferences`, and the navigation bell dropdown links there.
 - Browsers register a push subscription via the service worker (`/sw.js`); the manifest (`/manifest.webmanifest`) enables installable PWA behaviour.
