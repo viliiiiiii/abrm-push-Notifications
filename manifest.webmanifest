@@ -1,0 +1,21 @@
+{
+  "name": "Field Ops Hub",
+  "short_name": "FieldOps",
+  "start_url": "/index.php",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f9ff",
+  "theme_color": "#f6f9ff",
+  "icons": [
+    {
+      "src": "/assets/logo.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/assets/logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

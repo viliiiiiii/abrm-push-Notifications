@@ -978,15 +978,29 @@ function notify_users(array $userIds, string $type, string $title, string $body,
         // notification helpers are unavailable for some reason.
         try {
             $pdo  = get_pdo();
-            $now  = date('Y-m-d H:i:s');
             $jsonPayload = $basePayload['data'] ?? null;
             $json = $jsonPayload ? json_encode($jsonPayload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null;
-            $sql  = "INSERT INTO notifications (user_id, type, title, body, url, data, actor_user_id, created_at)
-                     VALUES (:user_id, :type, :title, :body, :url, :data, :actor_user_id, :created_at)";
+
+            $map = function_exists('notif_notifications_column_map')
+                ? notif_notifications_column_map()
+                : ['url' => 'url', 'data' => 'data', 'read_at' => 'read_at'];
+            $urlColumn = $map['url'] ?? 'url';
+            $dataColumn = $map['data'] ?? 'data';
+            $readColumn = $map['read_at'] ?? null;
+
+            $columns = ['user_id', 'type', 'title', 'body', $urlColumn, $dataColumn, 'actor_user_id', 'is_read'];
+            $placeholders = [':user_id', ':type', ':title', ':body', ':url', ':data', ':actor_user_id', ':is_read'];
+            if ($readColumn) {
+                $columns[] = $readColumn;
+                $placeholders[] = ':read_at';
+            }
+
+            $sql  = 'INSERT INTO notifications (' . implode(', ', array_map(static fn($c) => '`' . $c . '`', $columns)) . ')
+                     VALUES (' . implode(', ', $placeholders) . ')';
             $stmt = $pdo->prepare($sql);
 
             foreach ($ids as $uid) {
-                $stmt->execute([
+                $params = [
                     ':user_id'       => $uid,
                     ':type'          => $type,
                     ':title'         => $title,
@@ -994,8 +1008,12 @@ function notify_users(array $userIds, string $type, string $title, string $body,
                     ':url'           => $link,
                     ':data'          => $json,
                     ':actor_user_id' => $actorLocalId,
-                    ':created_at'    => $now,
-                ]);
+                    ':is_read'       => 0,
+                ];
+                if ($readColumn) {
+                    $params[':read_at'] = null;
+                }
+                $stmt->execute($params);
             }
         } catch (Throwable $fallbackError) {
             try {
@@ -1314,6 +1332,23 @@ function log_event(string $action, ?string $type = null, ?int $id = null, array 
         ]);
     } catch (Throwable $e) {
         // swallow logging errors
+    }
+
+    try {
+        if (!function_exists('notif_handle_log_event')) {
+            require_once __DIR__ . '/includes/notifications.php';
+        }
+        if (function_exists('notif_handle_log_event')) {
+            $ipText = null;
+            if (!empty($ipCandidate) && is_string($ipCandidate)) {
+                $ipText = $ipCandidate;
+            } elseif (!empty($remoteAddr) && is_string($remoteAddr)) {
+                $ipText = $remoteAddr;
+            }
+            notif_handle_log_event($action, $type, $id, $meta, $user, $ipText);
+        }
+    } catch (Throwable $e) {
+        try { error_log('notif_handle_log_event failed: ' . $e->getMessage()); } catch (Throwable $_) {}
     }
 }
 
