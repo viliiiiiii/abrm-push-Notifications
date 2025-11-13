@@ -662,15 +662,39 @@ function initPush() {
     });
   }
 
+  const announce = (detail) => {
+    window.__pushController = detail;
+    setTimeout(() => {
+      document.dispatchEvent(new CustomEvent('push:ready', { detail }));
+    }, 0);
+  };
+
   if (body.dataset.auth !== '1') {
-    document.dispatchEvent(new CustomEvent('push:ready', { detail: { supported: false } }));
+    announce({ supported: false, reason: 'unauthenticated' });
     return;
   }
 
   const subscribeEndpoint = body.dataset.pushSubscribe || '';
-  const vapidKey = body.dataset.pushPublicKey || '';
-  if (!('Notification' in window) || !('PushManager' in window) || subscribeEndpoint === '' || vapidKey === '') {
-    document.dispatchEvent(new CustomEvent('push:ready', { detail: { supported: false } }));
+  let vapidKey = body.dataset.pushPublicKey || '';
+  if (!vapidKey) {
+    const vapidMeta = document.querySelector('meta[name="vapid-public-key"]');
+    if (vapidMeta) {
+      vapidKey = vapidMeta.getAttribute('content') || '';
+    }
+  }
+
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    announce({ supported: false, reason: 'unsupported' });
+    return;
+  }
+
+  if (subscribeEndpoint === '') {
+    announce({ supported: false, reason: 'missing-endpoint' });
+    return;
+  }
+
+  if (vapidKey === '') {
+    announce({ supported: false, reason: 'missing-key' });
     return;
   }
 
@@ -717,6 +741,10 @@ function initPush() {
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
     if (subscription && !force) {
+      const payload = subscription && typeof subscription.toJSON === 'function'
+        ? subscription.toJSON()
+        : JSON.parse(JSON.stringify(subscription));
+      await sendIntent('subscribe', { subscription: payload });
       return { ok: true, subscription };
     }
     if (subscription) {
@@ -736,32 +764,36 @@ function initPush() {
     return { ok: true, subscription };
   };
 
-  const unsubscribe = async () => {
+  const unsubscribe = async ({ disableAll = false } = {}) => {
     const registration = await navigator.serviceWorker.ready;
     const subscription = await registration.pushManager.getSubscription();
+    let endpoint = '';
     if (subscription) {
-      const endpoint = subscription.endpoint;
-      await subscription.unsubscribe();
-      await sendIntent('unsubscribe', { endpoint });
+      endpoint = subscription.endpoint || '';
+      try { await subscription.unsubscribe(); } catch (err) { /* ignore */ }
     }
-    return fetchStatus();
+    const intent = disableAll ? 'disable' : 'unsubscribe';
+    const payload = endpoint ? { endpoint } : {};
+    const response = await sendIntent(intent, payload);
+    return response;
   };
 
-  document.dispatchEvent(new CustomEvent('push:ready', {
-    detail: {
-      supported: true,
-      ensureSubscription,
-      unsubscribe,
-      fetchStatus,
-      permission: () => Notification.permission,
-    },
-  }));
+  announce({
+    supported: true,
+    ensureSubscription,
+    unsubscribe,
+    fetchStatus,
+    permission: () => Notification.permission,
+  });
 }
 
 function initPushControls() {
   const statusEl = document.querySelector('[data-push-status]');
   const statusText = document.querySelector('[data-push-status-text]');
   const buttons = document.querySelectorAll('[data-push-action]');
+  const devicesRegion = document.querySelector('[data-push-devices-region]');
+  const devicesList = devicesRegion ? devicesRegion.querySelector('[data-push-device-list]') : null;
+  const emptyState = devicesRegion ? devicesRegion.querySelector('[data-push-empty]') : null;
   if (!statusEl && !buttons.length) {
     return;
   }
@@ -772,28 +804,131 @@ function initPushControls() {
     }
   };
 
+  const disableButtons = () => {
+    buttons.forEach((btn) => { btn.disabled = true; });
+  };
+
+  const enableButtons = () => {
+    buttons.forEach((btn) => { btn.disabled = false; });
+  };
+
+  const renderDevices = (devices) => {
+    if (!devicesList || !emptyState) {
+      return;
+    }
+    const entries = Array.isArray(devices) ? devices : [];
+    if (!entries.length) {
+      devicesList.innerHTML = '';
+      devicesList.hidden = true;
+      emptyState.hidden = false;
+      return;
+    }
+
+    const csrfName = sanitizeText(getCsrfName());
+    const csrfToken = sanitizeText(getCsrfToken());
+
+    const items = entries.map((device) => {
+      const id = Number(device.id) || 0;
+      const kindRaw = (device.kind || '').toString();
+      const kindLabel = kindRaw === 'webpush' ? 'Browser push' : kindRaw || 'Device';
+      const agent = device.user_agent ? sanitizeText(device.user_agent) : '';
+      const lastSeenRaw = device.last_used_at || device.created_at || '';
+      let lastSeenText = '';
+      if (lastSeenRaw) {
+        const relative = formatRelativeTime(lastSeenRaw.replace(' ', 'T'));
+        lastSeenText = `Last used ${lastSeenRaw}`;
+        if (relative) {
+          lastSeenText += ` (${relative})`;
+        }
+        lastSeenText = sanitizeText(lastSeenText);
+      }
+      const metaParts = [];
+      if (agent) metaParts.push(`<span>${agent}</span>`);
+      if (lastSeenText) metaParts.push(`<span>${lastSeenText}</span>`);
+      const metaHtml = metaParts.join('');
+
+      return `
+        <li data-device-id="${id}">
+          <div class="device-meta">
+            <strong>${sanitizeText(kindLabel)}</strong>
+            ${metaHtml}
+          </div>
+          <form method="post" class="inline-form" onsubmit="return confirm('Remove this device?');">
+            <input type="hidden" name="intent" value="device-delete">
+            <input type="hidden" name="device_id" value="${id}">
+            <input type="hidden" name="${csrfName}" value="${csrfToken}">
+            <button type="submit" class="btn link">Remove</button>
+          </form>
+        </li>
+      `;
+    }).join('');
+
+    devicesList.innerHTML = items;
+    devicesList.hidden = false;
+    emptyState.hidden = true;
+  };
+
   let controller = { supported: false };
 
-  document.addEventListener('push:ready', async (event) => {
+  const applyStatus = (result) => {
+    if (!result || result.ok === false) {
+      updateStatus('Unable to load status');
+      renderDevices([]);
+      return;
+    }
+    const devices = Array.isArray(result.devices) ? result.devices : [];
+    renderDevices(devices);
+    if (result.vapid_ready === false) {
+      updateStatus('Push not configured');
+      return;
+    }
+    if (result.allow_push) {
+      updateStatus(devices.length ? 'Enabled' : 'Ready');
+    } else {
+      updateStatus('Disabled');
+    }
+  };
+
+  const handleReady = async (event) => {
     controller = event.detail || { supported: false };
     if (!controller.supported) {
-      updateStatus('Push not supported');
-      buttons.forEach((btn) => { btn.disabled = true; });
+      const reason = controller.reason || '';
+      if (reason === 'missing-key') {
+        updateStatus('Push not configured');
+      } else if (reason === 'unauthenticated') {
+        updateStatus('Sign in to enable push');
+      } else if (reason === 'missing-endpoint') {
+        updateStatus('Push endpoint unavailable');
+      } else {
+        updateStatus('Push not supported');
+      }
+      disableButtons();
+      renderDevices([]);
       return;
     }
+
     if (controller.permission && controller.permission() === 'denied') {
       updateStatus('Permission denied');
-      buttons.forEach((btn) => { btn.disabled = true; });
+      disableButtons();
+      renderDevices([]);
       return;
     }
+
+    enableButtons();
     try {
       const result = await controller.fetchStatus();
-      const devices = Array.isArray(result.devices) ? result.devices : [];
-      updateStatus(devices.length ? 'Enabled' : 'Ready');
+      applyStatus(result);
     } catch (err) {
+      console.warn('Push status fetch failed', err);
       updateStatus('Unable to load status');
+      renderDevices([]);
     }
-  }, { once: true });
+  };
+
+  document.addEventListener('push:ready', handleReady);
+  if (window.__pushController) {
+    handleReady({ detail: window.__pushController });
+  }
 
   buttons.forEach((button) => {
     button.addEventListener('click', async () => {
@@ -805,12 +940,12 @@ function initPushControls() {
       try {
         if (action === 'enable') {
           await controller.ensureSubscription({ force: true });
+          const result = await controller.fetchStatus();
+          applyStatus(result);
         } else if (action === 'disable') {
-          await controller.unsubscribe();
+          const result = await controller.unsubscribe({ disableAll: true });
+          applyStatus(result);
         }
-        const result = await controller.fetchStatus();
-        const devices = Array.isArray(result.devices) ? result.devices : [];
-        updateStatus(devices.length ? 'Enabled' : 'Disabled');
       } catch (err) {
         updateStatus('Push failed');
         console.warn('Push control failed', err);
@@ -828,8 +963,7 @@ function initPushControls() {
       if (event.data && event.data.type === 'pushsubscriptionchange') {
         try {
           const result = await controller.fetchStatus();
-          const devices = Array.isArray(result.devices) ? result.devices : [];
-          updateStatus(devices.length ? 'Enabled' : 'Ready');
+          applyStatus(result);
         } catch (err) {
           updateStatus('Unable to refresh status');
         }

@@ -214,7 +214,7 @@ include __DIR__ . '/../includes/header.php';
       <?php if (!$vapidConfigured): ?>
         <p class="muted">VAPID keys are not configured. Push notifications are currently disabled.</p>
       <?php endif; ?>
-      <p data-push-status>Push notifications: <strong data-push-status-text>Checking…</strong></p>
+      <p data-push-status aria-live="polite">Push notifications: <strong data-push-status-text>Checking…</strong></p>
       <div class="button-row">
         <button type="button" class="btn" data-push-action="enable">Enable push</button>
         <button type="button" class="btn secondary" data-push-action="disable">Disable push</button>
@@ -227,32 +227,29 @@ include __DIR__ . '/../includes/header.php';
       <h2>Devices</h2>
       <p class="card-subtitle">Browsers and apps registered to receive notifications.</p>
     </header>
-    <div class="card-body">
-      <?php if (!$devices): ?>
-        <p class="muted">No devices are currently registered.</p>
-      <?php else: ?>
-        <ul class="device-list">
-          <?php foreach ($devices as $device): ?>
-            <li>
-              <div class="device-meta">
-                <strong><?php echo sanitize($device['kind']); ?></strong>
-                <?php if (!empty($device['user_agent'])): ?>
-                  <span><?php echo sanitize($device['user_agent']); ?></span>
-                <?php endif; ?>
-                <?php if (!empty($device['last_used_at'])): ?>
-                  <span>Last used <?php echo sanitize($device['last_used_at']); ?></span>
-                <?php endif; ?>
-              </div>
-              <form method="post" class="inline-form" onsubmit="return confirm('Remove this device?');">
-                <input type="hidden" name="intent" value="device-delete">
-                <input type="hidden" name="device_id" value="<?php echo (int)$device['id']; ?>">
-                <input type="hidden" name="<?php echo CSRF_TOKEN_NAME; ?>" value="<?php echo csrf_token(); ?>">
-                <button type="submit" class="btn link">Remove</button>
-              </form>
-            </li>
-          <?php endforeach; ?>
-        </ul>
-      <?php endif; ?>
+    <div class="card-body" data-push-devices-region>
+      <p class="muted" data-push-empty <?php echo $devices ? 'hidden' : ''; ?>>No devices are currently registered.</p>
+      <ul class="device-list" data-push-device-list <?php echo $devices ? '' : 'hidden'; ?>>
+        <?php foreach ($devices as $device): ?>
+          <li data-device-id="<?php echo (int)$device['id']; ?>">
+            <div class="device-meta">
+              <strong><?php echo sanitize($device['kind']); ?></strong>
+              <?php if (!empty($device['user_agent'])): ?>
+                <span><?php echo sanitize($device['user_agent']); ?></span>
+              <?php endif; ?>
+              <?php if (!empty($device['last_used_at'])): ?>
+                <span>Last used <?php echo sanitize($device['last_used_at']); ?></span>
+              <?php endif; ?>
+            </div>
+            <form method="post" class="inline-form" onsubmit="return confirm('Remove this device?');">
+              <input type="hidden" name="intent" value="device-delete">
+              <input type="hidden" name="device_id" value="<?php echo (int)$device['id']; ?>">
+              <input type="hidden" name="<?php echo CSRF_TOKEN_NAME; ?>" value="<?php echo csrf_token(); ?>">
+              <button type="submit" class="btn link">Remove</button>
+            </form>
+          </li>
+        <?php endforeach; ?>
+      </ul>
     </div>
   </section>
 </div>

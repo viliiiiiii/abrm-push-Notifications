@@ -281,11 +281,24 @@ function notif_set_global_preferences(int $userId, array $prefs): void {
 
     $current = notif_get_global_preferences($userId);
 
-    $allowInApp = !empty($prefs['allow_in_app']);
-    $allowEmail = !empty($prefs['allow_email']);
-    $allowPush  = !empty($prefs['allow_push']);
+    $allowInApp = array_key_exists('allow_in_app', $prefs)
+        ? !empty($prefs['allow_in_app'])
+        : !empty($current['allow_in_app']);
+    $allowEmail = array_key_exists('allow_email', $prefs)
+        ? !empty($prefs['allow_email'])
+        : !empty($current['allow_email']);
+    $allowPush = array_key_exists('allow_push', $prefs)
+        ? !empty($prefs['allow_push'])
+        : !empty($current['allow_push']);
 
     $types = $current['types'];
+    if (isset($prefs['types']) && is_array($prefs['types'])) {
+        foreach ($types as $key => $value) {
+            if (array_key_exists($key, $prefs['types'])) {
+                $types[$key] = !empty($prefs['types'][$key]);
+            }
+        }
+    }
     foreach ($types as $key => $value) {
         if (array_key_exists($key, $prefs)) {
             $types[$key] = !empty($prefs[$key]);

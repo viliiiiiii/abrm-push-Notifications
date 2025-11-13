@@ -17,13 +17,23 @@ $respond = static function (array $payload, int $status = 200): void {
 $sanitizeDevices = static function (array $rows): array {
     return array_map(static function (array $row): array {
         return [
-            'id'          => (int)($row['id'] ?? 0),
-            'kind'        => $row['kind'] ?? '',
-            'user_agent'  => $row['user_agent'] ?? '',
-            'created_at'  => $row['created_at'] ?? null,
-            'last_used_at'=> $row['last_used_at'] ?? null,
+            'id'           => (int)($row['id'] ?? 0),
+            'kind'         => $row['kind'] ?? '',
+            'user_agent'   => $row['user_agent'] ?? '',
+            'created_at'   => $row['created_at'] ?? null,
+            'last_used_at' => $row['last_used_at'] ?? null,
         ];
     }, $rows);
+};
+
+$statusPayload = static function () use ($localUserId, $sanitizeDevices): array {
+    $global = notif_get_global_preferences($localUserId);
+    return [
+        'ok'          => true,
+        'allow_push'  => !empty($global['allow_push']),
+        'vapid_ready' => notif_vapid_ready(),
+        'devices'     => $sanitizeDevices(notif_fetch_push_subscriptions($localUserId)),
+    ];
 };
 
 if (!$localUserId) {
@@ -50,24 +60,30 @@ if ($intent !== 'status') {
 
 try {
     if ($intent === 'status') {
-        $respond([
-            'ok'      => true,
-            'devices' => $sanitizeDevices(notif_fetch_push_subscriptions($localUserId)),
-        ]);
+        $respond($statusPayload());
     }
 
     if ($intent === 'unsubscribe') {
         $endpoint = trim((string)($input['endpoint'] ?? ''));
-        if ($endpoint === '') {
-            $respond(['ok' => false, 'error' => 'missing_endpoint'], 422);
-        }
         $pdo = notif_pdo();
-        $stmt = $pdo->prepare('DELETE FROM notification_devices WHERE user_id = :uid AND endpoint = :ep');
-        $stmt->execute([':uid' => $localUserId, ':ep' => $endpoint]);
-        $respond([
-            'ok'      => true,
-            'devices' => $sanitizeDevices(notif_fetch_push_subscriptions($localUserId)),
-        ]);
+        if ($endpoint !== '') {
+            $stmt = $pdo->prepare('DELETE FROM notification_devices WHERE user_id = :uid AND endpoint = :ep');
+            $stmt->execute([':uid' => $localUserId, ':ep' => $endpoint]);
+        }
+        $respond($statusPayload());
+    }
+
+    if ($intent === 'disable') {
+        $pdo = notif_pdo();
+        $endpoint = trim((string)($input['endpoint'] ?? ''));
+        if ($endpoint !== '') {
+            $stmt = $pdo->prepare('DELETE FROM notification_devices WHERE user_id = :uid AND endpoint = :ep');
+            $stmt->execute([':uid' => $localUserId, ':ep' => $endpoint]);
+        }
+        $stmt = $pdo->prepare("DELETE FROM notification_devices WHERE user_id = :uid AND kind = 'webpush'");
+        $stmt->execute([':uid' => $localUserId]);
+        notif_set_global_preferences($localUserId, ['allow_push' => false]);
+        $respond($statusPayload());
     }
 
     if ($intent !== 'subscribe') {
@@ -100,15 +116,9 @@ try {
         ':ua'       => $userAgent,
     ]);
 
-    $global = notif_get_global_preferences($localUserId);
-    if (empty($global['allow_push'])) {
-        notif_set_global_preferences($localUserId, ['allow_push' => true]);
-    }
+    notif_set_global_preferences($localUserId, ['allow_push' => true]);
 
-    $respond([
-        'ok'      => true,
-        'devices' => $sanitizeDevices(notif_fetch_push_subscriptions($localUserId)),
-    ]);
+    $respond($statusPayload());
 } catch (Throwable $e) {
     $respond(['ok' => false, 'error' => 'server', 'message' => $e->getMessage()], 500);
 }
