@@ -4,12 +4,13 @@ A lightweight PHP 8.2+ punch list manager designed for LAMP stacks with S3-compa
 
 ## Setup
 
-1. Run `composer install` to download dependencies (AWS SDK for PHP + Dompdf).
+1. Run `composer install` to download dependencies (AWS SDK for PHP, Dompdf, PhpSpreadsheet, Minishlink Web Push, Predis).
 2. Create a MySQL database and run the schema in `schema.sql` (or from README instructions).
 3. Copy `config.php.example` to `config.php` and fill in database and S3-compatible storage credentials.
-4. Run `php seed.php` once to seed the admin user (`admin@example.com` / `admin123`) and sample data.
-5. Point your web server's document root to this project directory.
-6. Ensure the `/vendor` directory is web-accessible (if your deployment keeps it outside the web root, update autoload include paths accordingly).
+4. Install Redis 6+ (`sudo apt install redis-server` on Ubuntu) and ensure it listens on `127.0.0.1:6379`.
+5. Run `php seed.php` once to seed the admin user (`admin@example.com` / `admin123`) and sample data.
+6. Point your web server's document root to this project directory.
+7. Ensure the `/vendor` directory is web-accessible (if your deployment keeps it outside the web root, update autoload include paths accordingly).
 
 ## Self-hosted Object Storage
 
@@ -84,3 +85,16 @@ For alternative storage backends (Ceph, OpenIO, etc.), adjust the endpoint and p
 - CSRF tokens protect all forms and upload/delete actions.
 - File uploads go directly to the configured S3-compatible endpoint.
 - Exports make use of Dompdf and standard CSV output.
+
+## Web push & notification settings
+
+- Generate VAPID keys with `php scripts/generate_vapid.php` and copy the values into `config.php` (`WEB_PUSH_VAPID_PUBLIC_KEY`, `WEB_PUSH_VAPID_PRIVATE_KEY`, `WEB_PUSH_VAPID_SUBJECT`).
+- The notification worker (`php scripts/notifications_worker.php [maxJobs] [blockSeconds]`) consumes push jobs from Redis; run it under a supervisor (e.g. systemd) so it blocks on `BRPOP` and processes deliveries continuously. Pass `0` as `maxJobs` to run indefinitely (default).
+- Users manage per-channel and per-type preferences from `/account/profile.php#notification-preferences`, with four buckets: Notes & tasks, System announcements, Security alerts, and Password & recovery. The navigation bell dropdown links there.
+- Browsers register a push subscription via the service worker (`/sw.js`); the manifest (`/manifest.webmanifest`) enables installable PWA behaviour.
+
+### Redis queue
+
+- Configure `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_DATABASE`, and `REDIS_QUEUE_PREFIX` in `config.php` if you do not use the defaults (`127.0.0.1:6379`, database `0`).
+- The worker and runtime helpers use Predis; run `composer install` after updating dependencies locally to generate the autoloader.
+- To seed Redis from legacy MySQL rows, the worker automatically backfills any `notification_channels_queue` entries that remain pending without a `scheduled_at` timestamp.

@@ -36,13 +36,26 @@ try {
   if (!empty($cols['type']))       { $insCols[]='type';       $params[':type']       = 'note.shared'; }
   if (!empty($cols['title']))      { $insCols[]='title';      $params[':title']      = 'Test notification'; }
   if (!empty($cols['body']))       { $insCols[]='body';       $params[':body']       = 'Hello from test.php at '.date('Y-m-d H:i:s'); }
-  if (!empty($cols['link']))       { $insCols[]='link';       $params[':link']       = '/notes/index.php'; }
-  if (!empty($cols['payload']))    {
-    $insCols[]='payload';
-    $json = json_encode(['env'=>'debug'], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
-    // If column is JSON type, send as text (PDO will cast fine); same for TEXT/VARCHAR.
-    $params[':payload'] = $json;
+
+  if (!empty($cols['url'])) {
+    $insCols[]='url';
+    $params[':url'] = '/notes/index.php';
+  } elseif (!empty($cols['link'])) {
+    $insCols[]='link';
+    $params[':link'] = '/notes/index.php';
   }
+
+  if (!empty($cols['data']) || !empty($cols['payload'])) {
+    $json = json_encode(['env'=>'debug'], JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+    if (!empty($cols['data'])) {
+      $insCols[]='data';
+      $params[':data'] = $json;
+    } else {
+      $insCols[]='payload';
+      $params[':payload'] = $json;
+    }
+  }
+
   if (!empty($cols['created_at'])) { $insCols[]='created_at'; $params[':created_at'] = date('Y-m-d H:i:s'); }
 
   $sql = 'INSERT INTO notifications (' . implode(',', $insCols) . ') VALUES (' .

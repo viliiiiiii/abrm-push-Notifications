@@ -39,3 +39,15 @@ define('APPS_DB_PASS', getenv('APPS_DB_PASS') ?: DB_PASS);
 define('CORE_DSN', 'mysql:host=127.0.0.1;dbname=core_db;charset=utf8mb4');
 define('CORE_DB_USER', 'core_user');
 define('CORE_DB_PASS', 'core123');
+
+// Web Push / VAPID configuration
+define('WEB_PUSH_VAPID_PUBLIC_KEY', getenv('WEB_PUSH_VAPID_PUBLIC_KEY') ?: '');
+define('WEB_PUSH_VAPID_PRIVATE_KEY', getenv('WEB_PUSH_VAPID_PRIVATE_KEY') ?: '');
+define('WEB_PUSH_VAPID_SUBJECT', getenv('WEB_PUSH_VAPID_SUBJECT') ?: 'mailto:admin@example.com');
+
+// Redis queue configuration
+define('REDIS_HOST', getenv('REDIS_HOST') ?: '127.0.0.1');
+define('REDIS_PORT', (int)(getenv('REDIS_PORT') ?: 6379));
+define('REDIS_PASSWORD', getenv('REDIS_PASSWORD') ?: '');
+define('REDIS_QUEUE_PREFIX', getenv('REDIS_QUEUE_PREFIX') ?: 'notifications:');
+define('REDIS_DATABASE', (int)(getenv('REDIS_DATABASE') ?: 0));
