@@ -84,6 +84,60 @@ if (!defined('HELPERS_BOOTSTRAPPED')) {
     }
     if (!defined('NOTIF_DB_KEY')) define('NOTIF_DB_KEY','core');
 
+    /** Obtain a shared Predis client (or null if unavailable). */
+    function app_redis(): ?\Predis\Client
+    {
+        static $client = null;
+        static $attempted = false;
+
+        if ($client instanceof \Predis\Client) {
+            return $client;
+        }
+
+        if ($attempted) {
+            return null;
+        }
+
+        $attempted = true;
+
+        if (!class_exists(\Predis\Client::class)) {
+            try {
+                error_log('Predis client class not available. Did you run composer install?');
+            } catch (Throwable $_) {}
+            return null;
+        }
+
+        $parameters = [
+            'scheme'   => 'tcp',
+            'host'     => defined('REDIS_HOST') ? REDIS_HOST : '127.0.0.1',
+            'port'     => defined('REDIS_PORT') ? (int)REDIS_PORT : 6379,
+            'database' => defined('REDIS_DATABASE') ? (int)REDIS_DATABASE : 0,
+        ];
+
+        if (defined('REDIS_PASSWORD') && REDIS_PASSWORD !== '') {
+            $parameters['password'] = REDIS_PASSWORD;
+        }
+
+        $options = [
+            'exceptions' => false,
+        ];
+
+        try {
+            $client = new \Predis\Client($parameters, $options);
+            $client->connect();
+            if (!$client->isConnected()) {
+                $client = null;
+            }
+        } catch (Throwable $e) {
+            $client = null;
+            try {
+                error_log('Redis connection failed: ' . $e->getMessage());
+            } catch (Throwable $_) {}
+        }
+
+        return $client;
+    }
+
     /* ===== Security: CSRF, flash, redirects ===== */
 
     function csrf_token(): string {

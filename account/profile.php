@@ -331,7 +331,7 @@ function profile_describe_security_event(array $row): array
 
 function profile_notification_types(): array
 {
-    return notif_type_catalog();
+    return notif_preference_catalog();
 }
 
 function profile_fetch_notification_devices(int $localUserId): array
@@ -787,6 +787,12 @@ $notificationsAvailable = $notificationUserId !== null;
 $notificationGlobals = $notificationsAvailable
     ? notif_get_global_preferences($notificationUserId)
     : notif_default_preferences();
+$catalogKeys = array_keys($notificationTypes);
+$normalizedTypes = [];
+foreach ($catalogKeys as $catalogKey) {
+    $normalizedTypes[$catalogKey] = !empty($notificationGlobals['types'][$catalogKey]);
+}
+$notificationGlobals['types'] = $normalizedTypes;
 $notificationDevices = $notificationsAvailable ? profile_fetch_notification_devices($notificationUserId) : [];
 $vapidReady = notif_vapid_ready();
 $sectorOptions = profile_fetch_sectors($pdo);
@@ -981,7 +987,7 @@ if (is_post()) {
                     ];
 
                     try {
-                        notif_set_type_pref($notificationUserId, $type, $update);
+                        notif_set_type_pref($notificationUserId, notif_category_pref_key($type), $update);
                     } catch (Throwable $e) {
                         $errors[] = 'Failed to save notification preferences for ' . $meta['label'] . '.';
                         break;
@@ -1337,7 +1343,8 @@ include __DIR__ . '/../includes/header.php';
               <h3 class="profile-subheading">Categories</h3>
               <div class="pref-switch-grid pref-switch-grid--wrap">
                 <?php foreach ($notificationGlobals['types'] as $category => $enabled): ?>
-                  <?php $catLabel = ucwords(str_replace('_', ' ', (string)$category)); ?>
+                  <?php $catMeta = $notificationTypes[$category] ?? null; ?>
+                  <?php $catLabel = $catMeta['label'] ?? ucwords(str_replace('_', ' ', (string)$category)); ?>
                   <label class="switch">
                     <input type="checkbox" name="global[types][<?php echo sanitize($category); ?>]" value="1"<?php echo $enabled ? ' checked' : ''; ?>>
                     <span class="switch__control" aria-hidden="true"></span>

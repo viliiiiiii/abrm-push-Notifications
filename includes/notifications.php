@@ -11,6 +11,21 @@ function notif_pdo(): PDO {
 $GLOBALS['notif_type_pref_cache'] = $GLOBALS['notif_type_pref_cache'] ?? [];
 $GLOBALS['notif_global_pref_cache'] = $GLOBALS['notif_global_pref_cache'] ?? [];
 
+function notif_queue_prefix(): string
+{
+    return defined('REDIS_QUEUE_PREFIX') ? (string)REDIS_QUEUE_PREFIX : 'notifications:';
+}
+
+function notif_push_queue_key(): string
+{
+    return notif_queue_prefix() . 'push_queue';
+}
+
+function notif_category_pref_key(string $category): string
+{
+    return 'category:' . strtolower($category);
+}
+
 function notif_table_exists(PDO $pdo, string $table): bool {
     if (!preg_match('/^[A-Za-z0-9_]+$/', $table)) {
         throw new InvalidArgumentException('Invalid table name supplied.');
@@ -56,15 +71,12 @@ function notif_global_preferences_table(): string {
     $createSql = "CREATE TABLE IF NOT EXISTS `{$newTable}` (
         `user_id` int NOT NULL,
         `allow_in_app` tinyint(1) NOT NULL DEFAULT '1',
-        `allow_email` tinyint(1) NOT NULL DEFAULT '0',
-        `allow_push` tinyint(1) NOT NULL DEFAULT '0',
-        `type_task` tinyint(1) NOT NULL DEFAULT '1',
-        `type_note` tinyint(1) NOT NULL DEFAULT '1',
+        `allow_email` tinyint(1) NOT NULL DEFAULT '1',
+        `allow_push` tinyint(1) NOT NULL DEFAULT '1',
+        `type_notes` tinyint(1) NOT NULL DEFAULT '1',
         `type_system` tinyint(1) NOT NULL DEFAULT '1',
-        `type_password_reset` tinyint(1) NOT NULL DEFAULT '1',
         `type_security` tinyint(1) NOT NULL DEFAULT '1',
-        `type_digest` tinyint(1) NOT NULL DEFAULT '1',
-        `type_marketing` tinyint(1) NOT NULL DEFAULT '0',
+        `type_password_reset` tinyint(1) NOT NULL DEFAULT '1',
         `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
         `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (`user_id`),
@@ -88,23 +100,75 @@ function notif_global_preferences_table(): string {
         if ($hasNew && $hasLegacy) {
             try {
                 $pdo->exec("INSERT IGNORE INTO `{$newTable}`
-                    (user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing, created_at, updated_at)
-                    SELECT user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing, created_at, updated_at
-                    FROM `{$legacyTable}`");
+                    (user_id, allow_in_app, allow_email, allow_push, type_notes, type_system, type_security, type_password_reset, created_at, updated_at)
+                    SELECT user_id,
+                           allow_in_app,
+                           allow_email,
+                           allow_push,
+                           GREATEST(COALESCE(type_note, 1), COALESCE(type_task, 1)) AS type_notes,
+                           GREATEST(COALESCE(type_system, 1), COALESCE(type_digest, 1), COALESCE(type_marketing, 0)) AS type_system,
+                           COALESCE(type_security, 1) AS type_security,
+                           COALESCE(type_password_reset, 1) AS type_password_reset,
+                           created_at,
+                           updated_at
+                      FROM `{$legacyTable}`");
             } catch (Throwable $e) {
             }
         }
     } elseif ($hasLegacy) {
         try {
             $pdo->exec("INSERT IGNORE INTO `{$newTable}`
-                (user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing, created_at, updated_at)
-                SELECT user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing, created_at, updated_at
-                FROM `{$legacyTable}`");
+                (user_id, allow_in_app, allow_email, allow_push, type_notes, type_system, type_security, type_password_reset, created_at, updated_at)
+                SELECT user_id,
+                       allow_in_app,
+                       allow_email,
+                       allow_push,
+                       GREATEST(COALESCE(type_note, 1), COALESCE(type_task, 1)) AS type_notes,
+                       GREATEST(COALESCE(type_system, 1), COALESCE(type_digest, 1), COALESCE(type_marketing, 0)) AS type_system,
+                       COALESCE(type_security, 1) AS type_security,
+                       COALESCE(type_password_reset, 1) AS type_password_reset,
+                       created_at,
+                       updated_at
+                  FROM `{$legacyTable}`");
         } catch (Throwable $e) {
         }
     }
 
     if ($hasNew) {
+        try {
+            $columns = notif_table_columns($pdo, $newTable);
+        } catch (Throwable $e) {
+            $columns = [];
+        }
+
+        $alter = [];
+        if (!in_array('type_notes', $columns, true)) {
+            $alter[] = "ADD COLUMN `type_notes` tinyint(1) NOT NULL DEFAULT '1' AFTER `allow_push`";
+        }
+        if (!in_array('type_system', $columns, true)) {
+            $alter[] = "ADD COLUMN `type_system` tinyint(1) NOT NULL DEFAULT '1' AFTER `type_notes`";
+        }
+        if (!in_array('type_security', $columns, true)) {
+            $alter[] = "ADD COLUMN `type_security` tinyint(1) NOT NULL DEFAULT '1' AFTER `type_system`";
+        }
+        if (!in_array('type_password_reset', $columns, true)) {
+            $alter[] = "ADD COLUMN `type_password_reset` tinyint(1) NOT NULL DEFAULT '1' AFTER `type_security`";
+        }
+        if ($alter) {
+            try {
+                $pdo->exec('ALTER TABLE `' . $newTable . '` ' . implode(', ', $alter));
+            } catch (Throwable $e) {
+            }
+        }
+
+        // Backfill notes/system columns from any legacy columns if they exist.
+        try {
+            $pdo->exec("UPDATE `{$newTable}` SET
+                type_notes = GREATEST(COALESCE(type_notes, 1), COALESCE(type_note, 1), COALESCE(type_task, 1)),
+                type_system = GREATEST(COALESCE(type_system, 1), COALESCE(type_digest, 1), COALESCE(type_marketing, 0))");
+        } catch (Throwable $e) {
+        }
+
         $table = $newTable;
         return $table;
     }
@@ -341,25 +405,25 @@ function notif_type_catalog(): array {
         'task.assigned' => [
             'label'            => 'Task assignments',
             'description'      => 'Alerts when someone assigns a task to you or your team.',
-            'category'         => 'task',
+            'category'         => 'notes',
             'default_channels' => ['web' => true, 'email' => false, 'push' => true],
         ],
         'task.unassigned' => [
             'label'            => 'Task unassigned',
             'description'      => 'Heads up when a task is no longer assigned to you.',
-            'category'         => 'task',
+            'category'         => 'notes',
             'default_channels' => ['web' => true, 'email' => false, 'push' => false],
         ],
         'task.updated' => [
             'label'            => 'Task progress',
             'description'      => 'Updates when priority, due dates, or status change on tasks you follow.',
-            'category'         => 'task',
+            'category'         => 'notes',
             'default_channels' => ['web' => true, 'email' => false, 'push' => false],
         ],
         'note.activity' => [
             'label'            => 'Note collaboration',
             'description'      => 'Comments, mentions, and edits on notes you created or follow.',
-            'category'         => 'note',
+            'category'         => 'notes',
             'default_channels' => ['web' => true, 'email' => false, 'push' => false],
         ],
         'system.broadcast' => [
@@ -395,18 +459,44 @@ function notif_type_catalog(): array {
         'digest.weekly' => [
             'label'            => 'Weekly digest',
             'description'      => 'Friday recap email with overdue tasks and unread notes.',
-            'category'         => 'digest',
+            'category'         => 'system',
             'default_channels' => ['web' => true, 'email' => true, 'push' => false],
         ],
         'marketing.campaign' => [
             'label'            => 'Product updates & tips',
             'description'      => 'Occasional product announcements and webinars.',
-            'category'         => 'marketing',
+            'category'         => 'system',
             'default_channels' => ['web' => false, 'email' => true, 'push' => false],
         ],
     ];
 
     return $catalog;
+}
+
+function notif_preference_catalog(): array
+{
+    return [
+        'notes' => [
+            'label'            => 'Notes & tasks',
+            'description'      => 'Activity on tasks you follow and collaborative note updates.',
+            'default_channels' => ['web' => true, 'email' => true, 'push' => true],
+        ],
+        'system' => [
+            'label'            => 'System announcements',
+            'description'      => 'Product updates, outages, and weekly digests from the team.',
+            'default_channels' => ['web' => true, 'email' => true, 'push' => true],
+        ],
+        'security' => [
+            'label'            => 'Security alerts',
+            'description'      => 'Login alerts, suspicious activity, and admin escalations.',
+            'default_channels' => ['web' => true, 'email' => true, 'push' => true],
+        ],
+        'password_reset' => [
+            'label'            => 'Password & recovery',
+            'description'      => 'Password reset requests and confirmations for your account.',
+            'default_channels' => ['web' => true, 'email' => true, 'push' => true],
+        ],
+    ];
 }
 
 /** Map concrete notification types to high-level preference buckets. */
@@ -417,10 +507,10 @@ function notif_type_category(string $type): string {
     }
 
     if (str_starts_with($type, 'task.')) {
-        return 'task';
+        return 'notes';
     }
     if (str_starts_with($type, 'note.')) {
-        return 'note';
+        return 'notes';
     }
     if (str_starts_with($type, 'security.')) {
         return 'security';
@@ -429,10 +519,14 @@ function notif_type_category(string $type): string {
         return 'system';
     }
     if (str_starts_with($type, 'digest.')) {
-        return 'digest';
+        return 'system';
     }
     if (str_starts_with($type, 'marketing.')) {
-        return 'marketing';
+        return 'system';
+    }
+
+    if (in_array($type, ['notes', 'system', 'security', 'password_reset'], true)) {
+        return $type;
     }
 
     return 'system';
@@ -442,16 +536,13 @@ function notif_type_category(string $type): string {
 function notif_default_preferences(): array {
     return [
         'allow_in_app' => true,
-        'allow_email'  => false,
-        'allow_push'   => false,
+        'allow_email'  => true,
+        'allow_push'   => true,
         'types'        => [
-            'task'           => true,
-            'note'           => true,
+            'notes'          => true,
             'system'         => true,
-            'password_reset' => true,
             'security'       => true,
-            'digest'         => true,
-            'marketing'      => false,
+            'password_reset' => true,
         ],
     ];
 }
@@ -476,18 +567,26 @@ function notif_get_global_preferences(int $userId): array {
         $stmt->execute([':u' => $userId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if ($row) {
+            $notesEnabled = array_key_exists('type_notes', $row)
+                ? !empty($row['type_notes'])
+                : (!empty($row['type_note']) || !empty($row['type_task']));
+            $systemEnabled = array_key_exists('type_system', $row)
+                ? !empty($row['type_system'])
+                : (!empty($row['type_system']) || !empty($row['type_digest']) || !empty($row['type_marketing']));
+            $securityEnabled = array_key_exists('type_security', $row) ? !empty($row['type_security']) : true;
+            $passwordEnabled = array_key_exists('type_password_reset', $row)
+                ? !empty($row['type_password_reset'])
+                : true;
+
             $prefs = [
                 'allow_in_app' => !empty($row['allow_in_app']),
                 'allow_email'  => !empty($row['allow_email']),
                 'allow_push'   => !empty($row['allow_push']),
                 'types'        => [
-                    'task'           => !empty($row['type_task']),
-                    'note'           => !empty($row['type_note']),
-                    'system'         => !empty($row['type_system']),
-                    'password_reset' => !empty($row['type_password_reset']),
-                    'security'       => !empty($row['type_security']),
-                    'digest'         => !empty($row['type_digest']),
-                    'marketing'      => !empty($row['type_marketing']),
+                    'notes'          => $notesEnabled,
+                    'system'         => $systemEnabled,
+                    'security'       => $securityEnabled,
+                    'password_reset' => $passwordEnabled,
                 ],
             ];
             return $notif_global_pref_cache[$userId] = $prefs;
@@ -535,32 +634,57 @@ function notif_set_global_preferences(int $userId, array $prefs): void {
         $pdo = notif_pdo();
         $table = notif_global_preferences_table();
         $sql = 'INSERT INTO `' . $table . '`
-                (user_id, allow_in_app, allow_email, allow_push, type_task, type_note, type_system, type_password_reset, type_security, type_digest, type_marketing)
-                VALUES (:u, :in_app, :email, :push, :task, :note, :system, :pwd, :security, :digest, :marketing)
+                (user_id, allow_in_app, allow_email, allow_push, type_notes, type_system, type_security, type_password_reset)
+                VALUES (:u, :in_app, :email, :push, :notes, :system, :security, :pwd)
                 ON DUPLICATE KEY UPDATE
                   allow_in_app = VALUES(allow_in_app),
                   allow_email = VALUES(allow_email),
                   allow_push = VALUES(allow_push),
-                  type_task = VALUES(type_task),
-                  type_note = VALUES(type_note),
+                  type_notes = VALUES(type_notes),
                   type_system = VALUES(type_system),
-                  type_password_reset = VALUES(type_password_reset),
                   type_security = VALUES(type_security),
-                  type_digest = VALUES(type_digest),
-                  type_marketing = VALUES(type_marketing)';
+                  type_password_reset = VALUES(type_password_reset)';
         $pdo->prepare($sql)->execute([
-            ':u'         => $userId,
-            ':in_app'    => $allowInApp ? 1 : 0,
-            ':email'     => $allowEmail ? 1 : 0,
-            ':push'      => $allowPush ? 1 : 0,
-            ':task'      => !empty($types['task']) ? 1 : 0,
-            ':note'      => !empty($types['note']) ? 1 : 0,
-            ':system'    => !empty($types['system']) ? 1 : 0,
-            ':pwd'       => !empty($types['password_reset']) ? 1 : 0,
-            ':security'  => !empty($types['security']) ? 1 : 0,
-            ':digest'    => !empty($types['digest']) ? 1 : 0,
-            ':marketing' => !empty($types['marketing']) ? 1 : 0,
+            ':u'      => $userId,
+            ':in_app' => $allowInApp ? 1 : 0,
+            ':email'  => $allowEmail ? 1 : 0,
+            ':push'   => $allowPush ? 1 : 0,
+            ':notes'  => !empty($types['notes']) ? 1 : 0,
+            ':system' => !empty($types['system']) ? 1 : 0,
+            ':security' => !empty($types['security']) ? 1 : 0,
+            ':pwd'    => !empty($types['password_reset']) ? 1 : 0,
         ]);
+
+        try {
+            $columns = notif_table_columns($pdo, $table);
+        } catch (Throwable $e) {
+            $columns = [];
+        }
+
+        $legacyAssignments = [];
+        if (in_array('type_task', $columns, true)) {
+            $legacyAssignments[] = 'type_task = :notes';
+        }
+        if (in_array('type_note', $columns, true)) {
+            $legacyAssignments[] = 'type_note = :notes';
+        }
+        if (in_array('type_digest', $columns, true)) {
+            $legacyAssignments[] = 'type_digest = :system';
+        }
+        if (in_array('type_marketing', $columns, true)) {
+            $legacyAssignments[] = 'type_marketing = :system';
+        }
+        if ($legacyAssignments) {
+            $sqlLegacy = 'UPDATE `' . $table . '` SET ' . implode(', ', $legacyAssignments) . ' WHERE user_id = :u';
+            try {
+                $pdo->prepare($sqlLegacy)->execute([
+                    ':u'     => $userId,
+                    ':notes' => !empty($types['notes']) ? 1 : 0,
+                    ':system'=> !empty($types['system']) ? 1 : 0,
+                ]);
+            } catch (Throwable $e) {
+            }
+        }
     } catch (Throwable $e) {
         // bubble up? swallow to avoid breaking caller
     }
@@ -700,6 +824,9 @@ function notif_set_type_pref(int $userId, string $type, array $prefs): void {
     ]);
 
     notif_forget_type_pref_cache($userId, $type);
+    if (str_starts_with($type, 'category:') || in_array($type, ['notes', 'system', 'security', 'password_reset'], true)) {
+        notif_forget_type_pref_cache($userId);
+    }
 }
 
 /** Get effective channel permissions for user+type (defaults if no row). */
@@ -714,12 +841,12 @@ function notif_get_type_pref(int $userId, string $type): array {
     $category = notif_type_category($type);
     $categoryEnabled = $global['types'][$category] ?? true;
 
-    $catalog = notif_type_catalog();
-    $typeDefaults = $catalog[$type]['default_channels'] ?? [];
+    $buckets = notif_preference_catalog();
+    $bucketDefaults = $buckets[$category]['default_channels'] ?? ['web' => true, 'email' => true, 'push' => true];
 
-    $defaultWeb = (array_key_exists('web', $typeDefaults) ? !empty($typeDefaults['web']) : true) && $global['allow_in_app'] && $categoryEnabled;
-    $defaultEmail = !empty($typeDefaults['email']) && $global['allow_email'] && $categoryEnabled;
-    $defaultPush = !empty($typeDefaults['push']) && $global['allow_push'] && $categoryEnabled;
+    $defaultWeb = !empty($bucketDefaults['web']) && $global['allow_in_app'] && $categoryEnabled;
+    $defaultEmail = !empty($bucketDefaults['email']) && $global['allow_email'] && $categoryEnabled;
+    $defaultPush = !empty($bucketDefaults['push']) && $global['allow_push'] && $categoryEnabled;
 
     $prefs = [
         'allow_web'   => $defaultWeb ? 1 : 0,
@@ -730,11 +857,27 @@ function notif_get_type_pref(int $userId, string $type): array {
 
     try {
         $pdo = notif_pdo();
-        $stmt = $pdo->prepare("SELECT allow_web, allow_email, allow_push, mute_until
+        $categoryKey = notif_category_pref_key($category);
+        $altKey = $category;
+        $stmt = $pdo->prepare('SELECT notif_type, allow_web, allow_email, allow_push, mute_until
                                FROM notification_type_prefs
-                               WHERE user_id=:u AND notif_type=:t");
-        $stmt->execute([':u'=>$userId, ':t'=>$type]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                               WHERE user_id = :u AND notif_type IN (:type, :categoryKey, :alt)');
+        $stmt->execute([
+            ':u'          => $userId,
+            ':type'       => $type,
+            ':categoryKey'=> $categoryKey,
+            ':alt'        => $altKey,
+        ]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $lookup = [];
+        foreach ($rows as $row) {
+            if (!isset($row['notif_type'])) {
+                continue;
+            }
+            $lookup[(string)$row['notif_type']] = $row;
+        }
+
+        $row = $lookup[$type] ?? ($lookup[$categoryKey] ?? ($lookup[$altKey] ?? null));
         if ($row) {
             $prefs['allow_web']   = (!empty($row['allow_web']) && $global['allow_in_app'] && $categoryEnabled) ? 1 : 0;
             $prefs['allow_email'] = (!empty($row['allow_email']) && $global['allow_email'] && $categoryEnabled) ? 1 : 0;
@@ -766,6 +909,109 @@ function notif_unsubscribe_user(int $userId, ?string $entityType, ?int $entityId
                    SET is_enabled=0
                    WHERE user_id=:u AND entity_type <=> :et AND entity_id <=> :eid AND event=:ev")
         ->execute([':u'=>$userId, ':et'=>$entityType, ':eid'=>$entityId, ':ev'=>$event]);
+}
+
+function notif_queue_channel_job(int $notificationId, string $channel, array $meta = []): ?int
+{
+    try {
+        $pdo = notif_pdo();
+    } catch (Throwable $e) {
+        return null;
+    }
+
+    notif_ensure_queue_schema();
+
+    try {
+        $stmt = $pdo->prepare("INSERT INTO notification_channels_queue (notification_id, channel, status, scheduled_at)
+                              VALUES (:nid, :ch, 'pending', NULL)");
+        $stmt->execute([
+            ':nid' => $notificationId,
+            ':ch'  => $channel,
+        ]);
+        $queueId = (int)$pdo->lastInsertId();
+    } catch (Throwable $e) {
+        return null;
+    }
+
+    if ($channel === 'push' && $queueId > 0) {
+        $meta['channel'] = 'push';
+        $meta['user_id'] = isset($meta['user_id']) ? (int)$meta['user_id'] : null;
+        $meta['type'] = isset($meta['type']) ? (string)$meta['type'] : null;
+        notif_enqueue_push_job($queueId, $notificationId, $meta);
+        try {
+            $pdo->prepare('UPDATE notification_channels_queue SET scheduled_at = NOW() WHERE id = :id')->execute([':id' => $queueId]);
+        } catch (Throwable $e) {
+        }
+    }
+
+    return $queueId ?: null;
+}
+
+function notif_enqueue_push_job(int $queueId, int $notificationId, array $meta = []): void
+{
+    $redis = app_redis();
+    if (!$redis) {
+        return;
+    }
+
+    $job = [
+        'queue_id'        => $queueId,
+        'notification_id' => $notificationId,
+        'channel'         => 'push',
+        'user_id'         => isset($meta['user_id']) ? (int)$meta['user_id'] : null,
+        'type'            => isset($meta['type']) ? (string)$meta['type'] : null,
+        'created_at'      => $meta['created_at'] ?? date('c'),
+    ];
+
+    try {
+        $redis->rpush(notif_push_queue_key(), json_encode($job, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+    } catch (Throwable $e) {
+        try {
+            error_log('Redis push queue enqueue failed: ' . $e->getMessage());
+        } catch (Throwable $_) {}
+    }
+}
+
+function notif_backfill_push_queue_from_mysql(int $limit = 100): void
+{
+    $redis = app_redis();
+    if (!$redis) {
+        return;
+    }
+
+    try {
+        $pdo = notif_pdo();
+    } catch (Throwable $e) {
+        return;
+    }
+
+    try {
+        $stmt = $pdo->prepare('SELECT id, notification_id
+                                 FROM notification_channels_queue
+                                WHERE channel = \'push\'
+                                  AND status = \'pending\'
+                                  AND (scheduled_at IS NULL OR scheduled_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE))
+                                ORDER BY id ASC
+                                LIMIT :lim');
+        $stmt->bindValue(':lim', max(1, (int)$limit), PDO::PARAM_INT);
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (Throwable $e) {
+        return;
+    }
+
+    foreach ($rows as $row) {
+        $queueId = (int)($row['id'] ?? 0);
+        $notificationId = (int)($row['notification_id'] ?? 0);
+        if ($queueId <= 0 || $notificationId <= 0) {
+            continue;
+        }
+        notif_enqueue_push_job($queueId, $notificationId, []);
+        try {
+            $pdo->prepare('UPDATE notification_channels_queue SET scheduled_at = NOW() WHERE id = :id')->execute([':id' => $queueId]);
+        } catch (Throwable $e) {
+        }
+    }
 }
 
 /** Insert one notification for one user, respecting their per-type prefs and mute. */
@@ -848,10 +1094,13 @@ function notif_emit(array $args): ?int {
 
     // Queue background channels (email/push) if allowed for this user+type
     if ($notifId && ($allow_email || $allow_push)) {
-        $ins = $pdo->prepare("INSERT INTO notification_channels_queue (notification_id, channel, status, scheduled_at)
-                              VALUES (:nid, :ch, 'pending', NULL)");
-        if ($allow_email) { $ins->execute([':nid'=>$notifId, ':ch'=>'email']); }
-        if ($allow_push)  { $ins->execute([':nid'=>$notifId, ':ch'=>'push']); }
+        $meta = ['user_id' => $userId, 'type' => $type];
+        if ($allow_email) {
+            notif_queue_channel_job($notifId, 'email', $meta);
+        }
+        if ($allow_push) {
+            notif_queue_channel_job($notifId, 'push', $meta);
+        }
     }
 
     return $notifId;
@@ -1266,7 +1515,7 @@ function notif_handle_log_event(string $action, ?string $entityType, ?int $entit
     }
 }
 
-function notif_process_push_queue(int $limit = 25): array {
+function notif_process_push_queue(int $limit = 0, int $blockSeconds = 5): array {
     $summary = [
         'checked' => 0,
         'sent'    => 0,
@@ -1287,46 +1536,63 @@ function notif_process_push_queue(int $limit = 25): array {
         return $summary;
     }
 
-    try {
-        $pdo = notif_pdo();
-        $pdo->beginTransaction();
-        $stmt = $pdo->prepare('SELECT id, notification_id
-                                FROM notification_channels_queue
-                                WHERE channel = \'push\' AND status = \'pending\'
-                                ORDER BY id ASC
-                                LIMIT :lim FOR UPDATE SKIP LOCKED');
-        $stmt->bindValue(':lim', max(1, (int)$limit), PDO::PARAM_INT);
-        $stmt->execute();
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
-
-        if ($rows) {
-            $ids = array_map('intval', array_column($rows, 'id'));
-            $placeholders = implode(',', array_fill(0, count($ids), '?'));
-            $mark = $pdo->prepare("UPDATE notification_channels_queue SET status = 'sending', scheduled_at = NOW() WHERE id IN ($placeholders)");
-            $mark->execute($ids);
-        }
-        $pdo->commit();
-    } catch (Throwable $e) {
-        if (isset($pdo) && $pdo instanceof PDO && $pdo->inTransaction()) {
-            try { $pdo->rollBack(); } catch (Throwable $_) {}
-        }
-        $summary['errors'][] = 'Failed to claim push jobs: ' . $e->getMessage();
-        return $summary;
-    }
-
-    if (empty($rows)) {
+    $redis = app_redis();
+    if (!$redis) {
+        $summary['errors'][] = 'Redis connection not available.';
         return $summary;
     }
 
     $auth = notif_vapid_config();
 
-    foreach ($rows as $row) {
-        $queueId = (int)$row['id'];
-        $notificationId = (int)$row['notification_id'];
+    notif_backfill_push_queue_from_mysql($limit > 0 ? $limit : 100);
+
+    $maxJobs = max(0, (int)$limit);
+    $key = notif_push_queue_key();
+
+    while ($maxJobs === 0 || $summary['checked'] < $maxJobs) {
+        try {
+            $payload = $redis->brpop([$key], max(1, (int)$blockSeconds));
+        } catch (Throwable $e) {
+            $summary['errors'][] = 'Redis BRPOP failed: ' . $e->getMessage();
+            break;
+        }
+
+        if (empty($payload)) {
+            notif_backfill_push_queue_from_mysql($limit > 0 ? $limit : 100);
+            continue;
+        }
+
         $summary['checked']++;
+        $raw = $payload[1] ?? '';
+        $job = json_decode((string)$raw, true);
+        if (!is_array($job)) {
+            $summary['skipped']++;
+            continue;
+        }
+
+        $queueId = (int)($job['queue_id'] ?? 0);
+        $notificationId = (int)($job['notification_id'] ?? 0);
+        if ($queueId <= 0 || $notificationId <= 0) {
+            $summary['skipped']++;
+            continue;
+        }
 
         try {
             $pdo = notif_pdo();
+        } catch (Throwable $e) {
+            $summary['errors'][] = 'Database unavailable: ' . $e->getMessage();
+            $summary['failed']++;
+            continue;
+        }
+
+        try {
+            $mark = $pdo->prepare("UPDATE notification_channels_queue SET status='sending', scheduled_at=NOW() WHERE id=:id AND status='pending'");
+            $mark->execute([':id' => $queueId]);
+        } catch (Throwable $e) {
+            // best effort; continue processing
+        }
+
+        try {
             $map = notif_notifications_column_map();
             $urlColumn = $map['url'] ?? 'url';
             $dataColumn = $map['data'] ?? 'data';
@@ -1374,7 +1640,7 @@ function notif_process_push_queue(int $limit = 25): array {
                 }
             }
 
-            $payload = [
+            $payloadData = [
                 'notification_id' => $notificationId,
                 'title'           => (string)($notification['title'] ?? 'Notification'),
                 'body'            => (string)($notification['body'] ?? ''),
@@ -1383,7 +1649,7 @@ function notif_process_push_queue(int $limit = 25): array {
                 'meta'            => $data,
                 'timestamp'       => $notification['created_at'] ?? date('c'),
             ];
-            $payloadJson = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $payloadJson = json_encode($payloadData, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
             $webPush = new Minishlink\WebPush\WebPush([
                 'VAPID' => [
@@ -1404,7 +1670,6 @@ function notif_process_push_queue(int $limit = 25): array {
                         ],
                     ]);
                 } catch (Throwable $e) {
-                    // invalid subscription payload, drop device
                     $del = $pdo->prepare('DELETE FROM notification_devices WHERE id = :id');
                     $del->execute([':id' => (int)$device['id']]);
                     continue;
@@ -1427,7 +1692,7 @@ function notif_process_push_queue(int $limit = 25): array {
             }
 
             if ($hadSuccess) {
-                $done = $pdo->prepare("UPDATE notification_channels_queue SET status='sent', sent_at=NOW() WHERE id=:id");
+                $done = $pdo->prepare("UPDATE notification_channels_queue SET status='sent', sent_at=NOW(), last_error=NULL WHERE id=:id");
                 $done->execute([':id' => $queueId]);
                 $summary['sent']++;
             } else {
@@ -1437,7 +1702,6 @@ function notif_process_push_queue(int $limit = 25): array {
             }
         } catch (Throwable $e) {
             try {
-                $pdo = notif_pdo();
                 $fail = $pdo->prepare("UPDATE notification_channels_queue SET status='failed', attempt_count = attempt_count + 1, last_error=:err WHERE id=:id");
                 $fail->execute([':err' => substr($e->getMessage(), 0, 240), ':id' => $queueId]);
             } catch (Throwable $_) {}
